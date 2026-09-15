@@ -1,0 +1,111 @@
+# OpenWrt x86_64 ImageBuilder 自动化构建项目
+
+基于 OpenWrt 官方 SDK 与 ImageBuilder 的 x86_64 固件自动化构建方案，支持 **GitHub Actions 云端定时/手动构建** 与 **本地 WSL2 / Linux 构建**。
+
+---
+
+## 🌟 核心特性
+
+- **动态拉取最新稳定版**：默认读取 OpenWrt 官方版本元数据并适配最新稳定版本；无法确认版本时立即停止，避免静默回退到旧固件。
+- **现代化引导与分区**：采用纯 UEFI (GPT) 引导架构，根分区默认预分配 **2GB (2048 MB)**，输出纯净 Squashfs 镜像。
+- **主流虚拟化与硬件就绪**：
+  - 兼容 PVE、ESXi、KVM、Hyper-V 及各类 x86 物理机软路由；
+  - 预装 `qemu-ga` 与 `open-vm-tools` 来宾集成服务；
+  - 集成 Realtek 2.5G (`r8125-rss`) / 万兆 (`r8127-rss`) 网卡驱动与联发科 Wi-Fi 6/6E (`mt7921e` / `mt7922`) 固件。
+- **开箱即用中文与实用组件**：
+  - 全套 LuCI 简体中文界面，默认启用现代化 `footstrap` 侧边栏主题；
+  - SQM CAKE 智能抗缓冲膨胀流控调度；
+  - 浏览器免客户端网页终端 `ttyd`；
+  - 按 fw876/helloworld 官方 CI 流程源码编译 SSR Plus、Xray 与 Mihomo，并集成简体中文界面；
+  - 预设国内权威 NTP 授时服务池（阿里云、腾讯云、国家授时中心）。
+- **自动化与差分报告**：
+  - 镜像文件名自动附带构建时间戳；
+  - 自动比对生成软件包清单差异报告 (`manifest.diff` / `manifest.md`)。
+
+---
+
+## 📁 项目目录结构
+
+```text
+.
+├── .github/workflows/build.yml   # GitHub Actions CI 工作流 (定时/手动构建)
+├── config/
+│   ├── custom-feeds.conf         # 第三方软件源列表 (支持 ${VERSION_SERIES} 动态分支)
+│   ├── extra-packages.txt        # 预装软件包清单 (支持行内与独立 # 注释)
+├── files/                        # 自定义根文件系统覆盖目录 (打包时自动合入固件)
+│   └── etc/uci-defaults/         # 首次开机自动初始化脚本
+├── scripts/
+│   ├── build.sh                  # 核心固件构建与归档流水线
+│   ├── build-helloworld.sh       # 使用同版 OpenWrt SDK 源码编译 SSR Plus APK
+│   ├── diff_manifest.py          # 软件包清单差分比对工具
+│   └── setup-env.sh              # 本地编译依赖检测与自动安装
+├── Makefile                      # 常用构建命令快捷入口
+└── README.md
+```
+
+---
+
+## 🚀 快速上手
+
+### 1. 云端构建 (GitHub Actions)
+- **定时自动构建**：每天**北京时间中午 12:15**（即 `04:15 UTC`）自动拉取官方最新稳定版完成编译。
+- **纯净提交策略**：代码推送 (Push) 不触发构建，避免不必要的 Actions 额度消耗。
+- **手动触发构建**：在 GitHub 仓库 **Actions** -> **构建 OpenWrt 固件** 中点击 **Run workflow**：
+  - `openwrt_version`: 默认 `latest`（自动拉取官方最新稳定版），亦可指定如 `25.12.5`；
+  - `rootfs_partsize`: 默认 `2048` MB (2GB)；
+  - `publish_release`: 是否发布到 Releases（默认 `false`，构建产物统一保存在 Artifacts 中保留 30 天）。
+
+### 2. 本地构建 (Ubuntu / Debian / WSL2)
+```bash
+# 1. 检查并安装构建依赖
+make env
+
+# 2. 执行编译与打包 (产物输出至 bin/ 目录)
+make build
+
+# 常用自定义参数示例:
+ROOTFS_PARTSIZE=4096 make build        # 自定义根分区大小为 4GB
+OPENWRT_VERSION=25.12.5 make build     # 指定特定版本进行构建
+```
+
+首次构建需要下载 SDK，并编译 `luci-app-ssr-plus`、`xray-core`、`mihomo` 及必要依赖，耗时会明显长于单独使用 ImageBuilder；后续构建会复用 `.work/downloads` 下载缓存。SDK 不会预下载 `naiveproxy` 的上游源码，它也不参与编译或固件打包。
+
+### 3. 构建产物说明 (`bin/`)
+- `openwrt-*-x86-64-generic-squashfs-combined-efi-YYYYMMDD-HHMM.img.gz`：UEFI 引导固件压缩包
+- `sha256sums`：SHA256 校验和文件
+- `*.manifest`：固件集成软件包完整清单
+- `manifest.diff` / `manifest.md`：软件包版本变动差异对比报告
+- `helloworld-build-info.txt`：本次 SDK、helloworld 源码提交与编译目标记录
+
+---
+
+## 💻 默认系统配置与部署说明
+
+| 项目 | 默认值 / 策略说明 |
+| :--- | :--- |
+| **引导方式** | **UEFI (GPT)**（虚拟机创建时引导类型务必选择 UEFI / OVMF） |
+| **管理后台地址** | `http://192.168.2.1`（已调整为 192.168.2.1，彻底避免与上级光猫 192.168.1.1 冲突） |
+| **子网掩码** | `255.255.255.0` |
+| **管理账号** | `root` |
+| **初始密码** | 无密码（首次登录后请在 Web 界面或终端立即设置密码） |
+| **IPv6 策略** | 默认关闭 WebUI 中的 WAN6、自启、地址/前缀请求、前缀委派、RA、DHCPv6、NDP 和 AAAA 应答；保留 IPv6 协议栈、软件包、防火墙规则及附属恢复参数，可在 WebUI 恢复 |
+| **SSH 安全机制** | Dropbear 仅绑定 LAN 口监听并默认禁用密码登录，仅允许公钥免密认证 |
+
+恢复 IPv6 时，可在 WebUI 依次重新启用 WAN 的 IPv6 获取、WAN6 接口及地址/前缀请求、LAN 的 IPv6 设备开关与前缀委派，并按需开启 RA、DHCPv6、SLAAC；最后在 DHCP/DNS 页面关闭“过滤 IPv6 AAAA 记录”。
+
+### 快速部署步骤：
+1. **解压固件**：将下载的 `.img.gz` 解压得到 `.img` 镜像文件；
+2. **虚拟化部署**：在虚拟化平台（PVE / ESXi / KVM / 飞牛 OS 等）中导入为虚拟磁盘（推荐 VirtIO 总线，**引导模式务必设为 UEFI**）；
+3. **物理机部署**：使用 Rufus、balenaEtcher 或 `dd` 将解压后的 `.img` 写入 U 盘或目标磁盘；
+4. **访问管理**：网线接入设备的 LAN 口，浏览器打开 `http://192.168.2.1` 即可进入管理后台。
+
+---
+
+## ⚙️ 自定义配置指南
+
+- **增减软件包**：编辑 [`config/extra-packages.txt`](config/extra-packages.txt)，每行一个软件包名称，支持使用 `#` 撰写中文注释（构建脚本会自动剥离注释与空行）。
+- **SSR Plus 源码构建**：[`scripts/build-helloworld.sh`](scripts/build-helloworld.sh) 移植自 [fw876/helloworld 官方 APK CI](https://github.com/fw876/helloworld/blob/dev/.github/workflows/release-packages.yml)。它动态下载与固件完全同版的官方 SDK，校验 SHA-256，使用 SDK 固定的官方 feeds，再编译官方列表中的 `luci-app-ssr-plus`、`xray-core`、`mihomo`；项目按需求排除了 `naiveproxy`。
+- **依赖与来源校验**：编译产生的 helloworld 依赖 APK 会组成临时本地仓库；三个目标包和简体中文包通过 `@helloworld` 标签锁定到本次源码产物，实际版本会写入构建记录。构建结束后会检查 Manifest，缺少任一目标或出现 `naiveproxy` 都会使构建失败。
+- **管理第三方软件源**：在 [`config/custom-feeds.conf`](config/custom-feeds.conf) 中按行添加 APK 源地址，URL 支持 `${VERSION_SERIES}` 占位符自动匹配当前 OpenWrt 主版本系列。
+- **自定义首次开机行为**：修改 [`files/etc/uci-defaults/99-custom-defaults`](files/etc/uci-defaults/99-custom-defaults)，固件初次启动时会自动执行该脚本中的 UCI 调整命令并完成固化。
+- **追加自定义系统文件**：将需要预置的文件直接放入 [`files/`](files/) 目录（映射为路由器系统的根路径 `/`），编译时将自动合并进固件中。

@@ -1,0 +1,204 @@
+#!/bin/sh
+
+# ==============================================================================
+# OpenWrt 首次开机自定义初始化与扩展配置脚本 (uci-defaults)
+# ==============================================================================
+# 说明:
+# 1. 本脚本由 /etc/init.d/boot 在系统首次启动时自动执行。
+# 2. 返回成功后，系统会统一提交 UCI 变更并删除本脚本；失败时保留并在下次启动重试。
+# 3. 集中维护网络、IPv6 关闭与恢复能力、系统时区、国内 NTP、
+#    SSH 密钥加固、防火墙与后台服务配置。
+# ==============================================================================
+
+# UCI 匿名节名称包含方括号，关闭路径名展开可避免被 shell 当作通配符。
+set -f
+
+# 关键 UCI 写入失败时立即终止，避免系统把只执行了一部分的默认配置标记为成功。
+fail() {
+    echo "99-custom-defaults: $*" >&2
+    exit 1
+}
+
+uci_set() {
+    uci -q set "$1" || fail "无法写入 UCI 选项：$1"
+}
+
+uci_add_list() {
+    uci -q add_list "$1" || fail "无法追加 UCI 列表：$1"
+}
+
+# 删除一个本来就不存在的选项是正常情况；已存在选项删除失败时必须终止。
+uci_delete() {
+    if uci -q get "$1" >/dev/null 2>&1; then
+        uci -q delete "$1" || fail "无法删除 UCI 选项：$1"
+    fi
+}
+
+# ------------------------------------------------------------------------------
+# 1. LAN 与 WAN 网络配置
+# ------------------------------------------------------------------------------
+[ "$(uci -q get network.lan 2>/dev/null)" = 'interface' ] || fail '缺少 network.lan 接口'
+[ "$(uci -q get network.wan 2>/dev/null)" = 'interface' ] || fail '缺少 network.wan 接口'
+
+# 强制设定 LAN 口 IP 为 192.168.2.1/24 (彻底清理旧的 list 与 scalar，防上级光猫 192.168.1.1 冲突)
+uci_delete 'network.lan.ipaddr'
+uci_delete 'network.lan.netmask'
+uci_add_list 'network.lan.ipaddr=192.168.2.1/24'
+
+# 协议设为 PPPoE 拨号
+uci_set 'network.wan.proto=pppoe'
+# 预留宽带账号与密码配置（默认留空，可在 LuCI 网页后台填写）
+# uci -q set network.wan.username='your_pppoe_account'
+# uci -q set network.wan.password='your_pppoe_password'
+
+# ------------------------------------------------------------------------------
+# 2. 全局网络并发与流优化 (全核并发分发 RPS 与本地流导向 RFS)
+# ------------------------------------------------------------------------------
+# 数据包引导设为“启用 (所有 CPU)”，适合多核 x86；实际收益取决于网卡、虚拟化和流量模型
+if uci -q get network.globals >/dev/null 2>&1; then
+    uci_set 'network.globals.packet_steering=2'
+    uci_set 'network.globals.steering_flows=128'
+else
+    uci_set 'network.@globals[0].packet_steering=2'
+    uci_set 'network.@globals[0].steering_flows=128'
+fi
+
+# ------------------------------------------------------------------------------
+# 3. 默认关闭 WebUI 中的 IPv6 功能（保留完整组件与恢复参数，可随时恢复）
+# ------------------------------------------------------------------------------
+# 1) 保留 WAN6 接口，只关闭开机自启、地址请求和前缀请求
+if ! uci -q get network.wan6 >/dev/null 2>&1; then
+    uci_set 'network.wan6=interface'
+    uci_set 'network.wan6.device=@wan'
+    uci_set 'network.wan6.proto=dhcpv6'
+fi
+[ "$(uci -q get network.wan6 2>/dev/null)" = 'interface' ] || fail 'network.wan6 不是有效接口'
+uci_set 'network.wan6.disabled=1'
+uci_set 'network.wan6.auto=0'
+uci_set 'network.wan6.reqaddress=none'
+uci_set 'network.wan6.reqprefix=no'
+uci_set 'network.wan6.extendprefix=0'
+
+# 2) 关闭 PPPoE 的 IPv6 协商；清理旧的 LAN 隐藏选项
+uci_set 'network.wan.ipv6=0'
+uci_delete 'network.lan.ipv6'
+
+# 关闭主要接口的前缀委派和前缀分配；保留前缀提示、类别、接口标识等恢复参数
+for interface_section in lan wan wan6; do
+    if [ "$(uci -q get "network.${interface_section}" 2>/dev/null)" = 'interface' ]; then
+        uci_set "network.${interface_section}.delegate=0"
+        uci_delete "network.${interface_section}.ip6assign"
+    fi
+done
+
+# IPv6 源路由只属于上行接口，避免向 loopback、LAN 等接口写入无效字段
+for interface_section in wan wan6; do
+    if [ "$(uci -q get "network.${interface_section}" 2>/dev/null)" = 'interface' ]; then
+        uci_set "network.${interface_section}.sourcefilter=0"
+    fi
+done
+
+# 关闭 WebUI“设备”页现有设备的 IPv6 与 IPv6 Segment Routing 开关
+network_config="$(uci -q show network 2>/dev/null)" || fail '无法读取 network 配置'
+device_sections="$(printf '%s\n' "$network_config" | sed -n 's/^network\.\([^=]*\)=device$/\1/p')"
+[ -n "$device_sections" ] || fail 'network 配置中没有设备节'
+for device_section in $device_sections; do
+    uci_set "network.${device_section}.ipv6=0"
+    uci_set "network.${device_section}.ip6segmentrouting=0"
+done
+
+# 3) 关闭各接口的 RA、DHCPv6 和 NDP 主功能；保留附属参数方便重新启用
+dhcp_config="$(uci -q show dhcp 2>/dev/null)" || fail '无法读取 dhcp 配置'
+dhcp_sections="$(printf '%s\n' "$dhcp_config" | sed -n 's/^dhcp\.\([^=]*\)=dhcp$/\1/p')"
+[ -n "$dhcp_sections" ] || fail 'dhcp 配置中没有接口节'
+for dhcp_section in $dhcp_sections; do
+    uci_delete "dhcp.${dhcp_section}.ra"
+    uci_delete "dhcp.${dhcp_section}.dhcpv6"
+    uci_delete "dhcp.${dhcp_section}.ndp"
+done
+
+# 4) 过滤 DNS AAAA 应答；此项也可在 WebUI 的 DHCP/DNS 页面关闭
+dnsmasq_sections="$(printf '%s\n' "$dhcp_config" | sed -n 's/^dhcp\.\([^=]*\)=dnsmasq$/\1/p')"
+[ -n "$dnsmasq_sections" ] || fail 'dhcp 配置中没有 dnsmasq 节'
+for dnsmasq_section in $dnsmasq_sections; do
+    uci_set "dhcp.${dnsmasq_section}.filter_aaaa=1"
+done
+
+# 5) 保留防火墙 IPv6 规则，以便从 WebUI 恢复后立即正常工作
+firewall_config="$(uci -q show firewall 2>/dev/null)" || fail '无法读取 firewall 配置'
+defaults_sections="$(printf '%s\n' "$firewall_config" | sed -n 's/^firewall\.\([^=]*\)=defaults$/\1/p')"
+[ -n "$defaults_sections" ] || fail 'firewall 配置中没有 defaults 节'
+for defaults_section in $defaults_sections; do
+    uci_delete "firewall.${defaults_section}.disable_ipv6"
+done
+
+# ------------------------------------------------------------------------------
+# 4. 可选配置：局域网自定义 DNS 广播下发示例 (DHCP Option 6)
+# ------------------------------------------------------------------------------
+# 如需将全屋设备 DNS 自动广播指向内网的独立 DNS/AdGuard 服务器，可取消注释并填入其 IP：
+# uci -q add_list dhcp.lan.dhcp_option='6,192.168.2.X'
+# uci -q add_list dhcp.lan.dns='192.168.2.X'
+
+# ------------------------------------------------------------------------------
+# 5. Dropbear SSH 安全加固 (限制监听 LAN 接口，仅允许密钥认证)
+# ------------------------------------------------------------------------------
+if uci -q get dropbear.main >/dev/null 2>&1; then
+    db_sec="dropbear.main"
+else
+    db_sec="dropbear.@dropbear[0]"
+fi
+
+# 绑定监听接口为 LAN，防止 WAN 口暴露
+uci_set "${db_sec}.Interface=lan"
+# 禁用密码认证，仅限 SSH 密钥登录 (在 LuCI 网页后台【系统】-【管理权】中粘贴公钥即可)
+uci_set "${db_sec}.PasswordAuth=off"
+uci_set "${db_sec}.RootPasswordAuth=off"
+
+# ------------------------------------------------------------------------------
+# 6. 系统时区、国内 NTP 授时服务器与界面语言配置
+# ------------------------------------------------------------------------------
+# 设置时区为上海 (CST-8)
+uci_set 'system.@system[0].timezone=CST-8'
+uci_set 'system.@system[0].zonename=Asia/Shanghai'
+
+# 设置国内常见优质 NTP 授时服务器 (阿里云 / 腾讯云 / 中国国家授时中心 / 国内 NTP 池)
+uci_delete 'system.ntp.server'
+uci_add_list 'system.ntp.server=ntp.aliyun.com'
+uci_add_list 'system.ntp.server=ntp.tencent.com'
+uci_add_list 'system.ntp.server=ntp.ntsc.ac.cn'
+uci_add_list 'system.ntp.server=cn.pool.ntp.org'
+
+# 设置 LuCI 默认语言和主题
+uci_set 'luci.main.lang=zh_cn'
+uci_set 'luci.main.mediaurlbase=/luci-static/footstrap'
+
+# ------------------------------------------------------------------------------
+# 7. 定时重启示例
+# ------------------------------------------------------------------------------
+# 预置定时重启示例 (默认注释未生效，如需启用删除最前面的 # 并在后台保存即可)
+mkdir -p /etc/crontabs || fail '无法创建 /etc/crontabs'
+if ! grep -q "定时重启示例" /etc/crontabs/root 2>/dev/null; then
+    cat << 'CRON_EOF' >> /etc/crontabs/root || fail '无法写入定时重启示例'
+
+# ==============================================================================
+# [定时重启示例] 语法格式: 分 时 日 月 周 命令
+# 默认已注释。如需启用，请删除目标行开头的 '#' 并在管理后台点击【保存并应用】
+# 注：加入 'sleep 70' 可跨过触发分钟，防止 x86 设备启动过快导致 1 分钟内连续重启
+# ==============================================================================
+# 示例一：每天凌晨 04:30 自动安全重启
+# 30 4 * * * sleep 70 && reboot
+#
+# 示例二：每周一凌晨 04:30 自动安全重启
+# 30 4 * * 1 sleep 70 && reboot
+CRON_EOF
+fi
+
+# ------------------------------------------------------------------------------
+# 8. 虚拟机增强服务管理 (QEMU Guest Agent)
+# ------------------------------------------------------------------------------
+if [ -f /etc/init.d/qemu-ga ]; then
+    /etc/init.d/qemu-ga enable || fail '无法启用 qemu-ga 服务'
+fi
+
+# /etc/init.d/boot 会在本脚本成功返回后统一执行 uci commit。
+true
