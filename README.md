@@ -16,6 +16,7 @@
   - 全套 LuCI 简体中文界面，默认启用现代化 `footstrap` 侧边栏主题；
   - SQM CAKE 智能抗缓冲膨胀流控调度；
   - 浏览器免客户端网页终端 `ttyd`；
+  - 使用完全同版 OpenWrt SDK 编译并集成 LEDE nftables FullCone NAT 完整调用链；
   - 按 fw876/helloworld 官方 CI 流程源码编译 SSR Plus、Xray 与 Mihomo，并集成简体中文界面；
   - 预设国内权威 NTP 授时服务池（阿里云、腾讯云、国家授时中心）。
 - **自动化与差分报告**：
@@ -37,6 +38,7 @@
 ├── scripts/
 │   ├── build.sh                  # 核心固件构建与归档流水线
 │   ├── build-helloworld.sh       # 使用同版 OpenWrt SDK 源码编译 SSR Plus APK
+│   ├── build-fullcone.sh         # 使用同版 OpenWrt SDK 编译 nftables FullCone APK
 │   ├── diff_manifest.py          # 软件包清单差分比对工具
 │   └── setup-env.sh              # 本地编译依赖检测与自动安装
 ├── Makefile                      # 常用构建命令快捷入口
@@ -105,6 +107,7 @@ OPENWRT_VERSION=25.12.5 make build     # 指定特定版本进行构建
 
 - **增减软件包**：编辑 [`config/extra-packages.txt`](config/extra-packages.txt)，每行一个软件包名称，支持使用 `#` 撰写中文注释（构建脚本会自动剥离注释与空行）。
 - **SSR Plus 源码构建**：[`scripts/build-helloworld.sh`](scripts/build-helloworld.sh) 移植自 [fw876/helloworld 官方 APK CI](https://github.com/fw876/helloworld/blob/dev/.github/workflows/release-packages.yml)。它动态下载与固件完全同版的官方 SDK，校验 SHA-256，使用 SDK 固定的官方 feeds，再编译官方列表中的 `luci-app-ssr-plus`、`xray-core`、`mihomo`；项目按需求排除了 `naiveproxy`。
+- **FullCone NAT**：[`scripts/build-fullcone.sh`](scripts/build-fullcone.sh) 使用完全同版 SDK 编译 `kmod-nft-fullcone` 以及配套的 libnftnl、nftables、firewall4 APK。来源审核、排除的 LEDE 补丁、ABI 约束和运行时验收见 [`docs/FULLCONE.md`](docs/FULLCONE.md)。
 - **依赖与来源校验**：编译产生的 helloworld 依赖 APK 会组成临时本地仓库；三个目标包和简体中文包通过 `@helloworld` 标签锁定到本次源码产物，实际版本会写入构建记录。构建结束后会检查 Manifest，缺少任一目标或出现 `naiveproxy` 都会使构建失败。
 - **管理第三方软件源**：在 [`config/custom-feeds.conf`](config/custom-feeds.conf) 中按行添加 APK 源地址，URL 支持 `${VERSION_SERIES}` 占位符自动匹配当前 OpenWrt 主版本系列。
 - **自定义首次开机行为**：修改 [`files/etc/uci-defaults/99-custom-defaults`](files/etc/uci-defaults/99-custom-defaults)，固件初次启动时会自动执行该脚本中的 UCI 调整命令并完成固化。

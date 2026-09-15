@@ -13,7 +13,7 @@ echo "  正在检查 OpenWrt ImageBuilder 所需编译依赖..."
 echo "=================================================="
 
 # 必备构建依赖列表及其用途:
-# - build-essential, clang, flex, bison, bzip2: SDK 源码编译与解包工具
+# - build-essential, binutils, clang, flex, bison, bzip2, patch: SDK 源码编译与补丁工具
 # - gcc-multilib, g++-multilib: helloworld 官方 CI 使用的多架构宿主工具链
 # - libncurses-dev: 终端控制台图形库
 # - zlib1g-dev, libssl-dev: 压缩与加解密支持库
@@ -23,6 +23,7 @@ echo "=================================================="
 # - python3: 软件包清单比对脚本 (diff_manifest.py) 运行环境
 DEPS=(
     build-essential
+    binutils
     clang
     flex
     bison
@@ -40,6 +41,7 @@ DEPS=(
     wget
     curl
     file
+    patch
     tar
     zstd
     unzip

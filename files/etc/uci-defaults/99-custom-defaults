@@ -130,7 +130,14 @@ defaults_sections="$(printf '%s\n' "$firewall_config" | sed -n 's/^firewall\.\([
 [ -n "$defaults_sections" ] || fail 'firewall 配置中没有 defaults 节'
 for defaults_section in $defaults_sections; do
     uci_delete "firewall.${defaults_section}.disable_ipv6"
+    # 使用 nft_fullcone expression 启用 IPv4 FullCone；IPv6 FullCone 保持关闭。
+    uci_set "firewall.${defaults_section}.fullcone=1"
+    uci_set "firewall.${defaults_section}.fullcone6=0"
 done
+
+# 在首次启动阶段验证 kernel -> nftables -> fw4 的静态调用链。失败时本脚本会保留，
+# 防止系统把缺少 FullCone 的配置标记为初始化成功。
+/usr/sbin/fullcone-check syntax || fail 'FullCone 运行时语法检查失败'
 
 # ------------------------------------------------------------------------------
 # 4. 可选配置：局域网自定义 DNS 广播下发示例 (DHCP Option 6)

@@ -65,6 +65,7 @@ BIN_DIR="${WORKSPACE_ROOT}/bin"
 CONFIG_DIR="${WORKSPACE_ROOT}/config"
 FILES_DIR="${WORKSPACE_ROOT}/files"
 HELLOWORLD_OUTPUT_DIR="${WORK_DIR}/helloworld-packages-${OPENWRT_VERSION}"
+FULLCONE_OUTPUT_DIR="${WORK_DIR}/fullcone-packages-${OPENWRT_VERSION}"
 
 IB_TARBALL="openwrt-imagebuilder-${OPENWRT_VERSION}-${ARCH}.Linux-x86_64.tar.zst"
 IB_DIR_NAME="openwrt-imagebuilder-${OPENWRT_VERSION}-${ARCH}.Linux-x86_64"
@@ -133,6 +134,10 @@ echo "==> 正在导入第三方签名公钥..."
 mkdir -p "${IB_DIR}/keys"
 # 清理未由当前项目配置管理的旧式第三方公钥。
 find "${IB_DIR}/keys" -maxdepth 1 -type f -name '*.pub' -delete
+rm -f \
+    "${IB_DIR}/keys/helloworld-public-key.pem" \
+    "${IB_DIR}/keys/fullcone-public-key.pem" \
+    "${IB_DIR}/keys/custom-sdk-public-key.pem"
 if [ -d "${CONFIG_DIR}/keys" ]; then
     cp -f "${CONFIG_DIR}/keys"/* "${IB_DIR}/keys/" 2>/dev/null || true
 fi
@@ -145,15 +150,30 @@ OUTPUT_DIR="${HELLOWORLD_OUTPUT_DIR}" \
 ARCH="${ARCH}" \
 "${SCRIPT_DIR}/build-helloworld.sh"
 
-# 4. 将源码编译产物导入 ImageBuilder 本地 APK 仓库
-echo "==> 导入 helloworld 本地 APK 仓库..."
+# 4. 使用同一个官方 SDK 编译 LEDE nftables FullCone 调用链
+echo "==> 开始源码编译 FullCone APK 调用链..."
+OPENWRT_VERSION="${OPENWRT_VERSION}" \
+WORK_DIR="${WORK_DIR}" \
+OUTPUT_DIR="${FULLCONE_OUTPUT_DIR}" \
+ARCH="${ARCH}" \
+"${SCRIPT_DIR}/build-fullcone.sh"
+
+# 5. 将所有同版 SDK 产物导入 ImageBuilder 本地 APK 仓库
+echo "==> 导入自编译本地 APK 仓库..."
 (cd "${HELLOWORLD_OUTPUT_DIR}" && sha256sum --check --strict SHA256SUMS)
+(cd "${FULLCONE_OUTPUT_DIR}" && sha256sum --check --strict SHA256SUMS)
+cmp -s "${HELLOWORLD_OUTPUT_DIR}/helloworld-public-key.pem" \
+    "${FULLCONE_OUTPUT_DIR}/fullcone-public-key.pem" || {
+        echo "❌ 错误: 两个 SDK 编译阶段的 APK 签名密钥不一致。" >&2
+        exit 1
+    }
 mkdir -p "${IB_DIR}/packages" "${IB_DIR}/keys"
 
 # 兼容并清理此前静态预编译包方案留下的记录。
 for local_manifest in \
     "${IB_DIR}/packages/.custom-local-packages" \
-    "${IB_DIR}/packages/.helloworld-local-packages"; do
+    "${IB_DIR}/packages/.helloworld-local-packages" \
+    "${IB_DIR}/packages/.fullcone-local-packages"; do
     if [ -f "${local_manifest}" ]; then
         while IFS= read -r package_name; do
             case "${package_name}" in
@@ -163,33 +183,42 @@ for local_manifest in \
     fi
 done
 
-LOCAL_PACKAGE_MANIFEST="${IB_DIR}/packages/.helloworld-local-packages"
+LOCAL_PACKAGE_MANIFEST="${IB_DIR}/packages/.custom-local-packages"
 : > "${LOCAL_PACKAGE_MANIFEST}"
 shopt -s nullglob
 HELLOWORLD_APKS=("${HELLOWORLD_OUTPUT_DIR}"/*.apk)
+FULLCONE_APKS=("${FULLCONE_OUTPUT_DIR}"/*.apk)
 shopt -u nullglob
 [ ${#HELLOWORLD_APKS[@]} -gt 0 ] || {
     echo "❌ 错误: helloworld 构建目录中没有 APK。" >&2
     exit 1
 }
-for package_file in "${HELLOWORLD_APKS[@]}"; do
+[ ${#FULLCONE_APKS[@]} -gt 0 ] || {
+    echo "❌ 错误: FullCone 构建目录中没有 APK。" >&2
+    exit 1
+}
+for package_file in "${HELLOWORLD_APKS[@]}" "${FULLCONE_APKS[@]}"; do
     package_name="$(basename "${package_file}")"
+    if [ -e "${IB_DIR}/packages/${package_name}" ]; then
+        echo "❌ 错误: 本地 APK 文件名冲突: ${package_name}" >&2
+        exit 1
+    fi
     cp -f "${package_file}" "${IB_DIR}/packages/${package_name}"
     printf '%s\n' "${package_name}" >> "${LOCAL_PACKAGE_MANIFEST}"
 done
 cp -f "${HELLOWORLD_OUTPUT_DIR}/helloworld-public-key.pem" \
-    "${IB_DIR}/keys/helloworld-public-key.pem"
+    "${IB_DIR}/keys/custom-sdk-public-key.pem"
 
-# 给本地仓库加标签，确保目标包来自本次 helloworld 源码构建。
-LOCAL_REPOSITORY="@helloworld file://${IB_DIR}/packages/packages.adb"
-sed -i '\|^@helloworld file://|d' "${IB_DIR}/repositories"
+# 给本地仓库加标签，确保 SSR Plus 和 FullCone 目标包来自本次同版 SDK。
+LOCAL_REPOSITORY="@custom file://${IB_DIR}/packages/packages.adb"
+sed -i '\|^@helloworld file://|d; \|^@custom file://|d' "${IB_DIR}/repositories"
 printf '%s\n' "${LOCAL_REPOSITORY}" >> "${IB_DIR}/repositories"
 
 # APK 或签名密钥变化后强制 ImageBuilder 重建并签名本地仓库索引。
 rm -f "${IB_DIR}/packages/packages.adb"
-echo "  已导入 ${#HELLOWORLD_APKS[@]} 个 APK。"
+echo "  已导入 $(( ${#HELLOWORLD_APKS[@]} + ${#FULLCONE_APKS[@]} )) 个 APK。"
 
-# 5. 配置自定义第三方软件源 (自动替换 ${VERSION_SERIES} 动态系列)
+# 6. 配置自定义第三方软件源 (自动替换 ${VERSION_SERIES} 动态系列)
 echo "==> 正在配置自定义软件源 (分支代号: ${VERSION_SERIES})..."
 if [ -f "${CONFIG_DIR}/custom-feeds.conf" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
@@ -204,7 +233,7 @@ if [ -f "${CONFIG_DIR}/custom-feeds.conf" ]; then
     done < "${CONFIG_DIR}/custom-feeds.conf"
 fi
 
-# 6. 解析软件包清单，并将目标包锁定到本次源码构建的仓库
+# 7. 解析软件包清单，并将目标包锁定到本次源码构建的仓库
 echo "==> 正在解析 extra-packages 软件包清单..."
 PACKAGE_LIST=()
 EXTRA_PKG_FILE="${CONFIG_DIR}/extra-packages.txt"
@@ -228,12 +257,14 @@ while IFS= read -r constraint; do
             filtered_packages+=("${package_name}")
     done
     PACKAGE_LIST=("${filtered_packages[@]}" "${constraint}")
-done < "${HELLOWORLD_OUTPUT_DIR}/install-constraints.txt"
+done < <(cat \
+    "${HELLOWORLD_OUTPUT_DIR}/install-constraints.txt" \
+    "${FULLCONE_OUTPUT_DIR}/install-constraints.txt")
 
 PACKAGES="${PACKAGE_LIST[*]}"
 echo "  包含增量包: ${PACKAGES}"
 
-# 7. 调整 ImageBuilder .config 以匹配目标文件系统与镜像类型
+# 8. 调整 ImageBuilder .config 以匹配目标文件系统与镜像类型
 if [ "${TARGET_FILESYSTEMS}" = "squashfs" ]; then
     echo "==> 设置仅编译 squashfs 文件系统 (禁用 ext4 与 targz)..."
     sed -i -E 's/CONFIG_TARGET_ROOTFS_EXT4FS=y/# CONFIG_TARGET_ROOTFS_EXT4FS is not set/' "${IB_DIR}/.config"
@@ -255,7 +286,7 @@ echo "==> 清理历史构建产物..."
 rm -rf "${IB_DIR}/bin/targets/x86/64"/*
 rm -rf "${BIN_DIR:?}"/*
 
-# 8. 执行固件构建
+# 9. 执行固件构建
 echo "==> 开始执行 make image 构建固件..."
 BUILD_ARGS=(
     -C "${IB_DIR}"
@@ -276,7 +307,7 @@ fi
 
 make "${BUILD_ARGS[@]}"
 
-# 9. 收集并规整构建产物
+# 10. 收集并规整构建产物
 echo "==> 正在收集构建产物至 ${BIN_DIR}..."
 OUTPUT_SOURCE_DIR="${IB_DIR}/bin/targets/x86/64"
 
@@ -321,10 +352,68 @@ if [ -d "${OUTPUT_SOURCE_DIR}" ]; then
         echo "❌ 错误: 固件中意外包含 naiveproxy。" >&2
         exit 1
     fi
+
+    # FullCone 四层调用链和精确 kernel ABI 都必须出现在最终固件中。
+    while IFS= read -r required_package; do
+        if ! awk '{print $1}' "${MANIFEST_FILE}" | grep -Fxq "${required_package}"; then
+            echo "❌ 错误: 固件 Manifest 缺少 FullCone 组件 ${required_package}。" >&2
+            exit 1
+        fi
+    done < "${FULLCONE_OUTPUT_DIR}/install-packages.txt"
+    fullcone_kernel_dependency="$(cat "${FULLCONE_OUTPUT_DIR}/kernel-dependency.txt")"
+    firmware_kernel_version="$(awk '$1 == "kernel" { print $3; exit }' "${MANIFEST_FILE}")"
+    [ "kernel=${firmware_kernel_version}" = "${fullcone_kernel_dependency}" ] || {
+        echo "❌ 错误: kmod-nft-fullcone ABI 与固件 kernel 不一致。" >&2
+        echo "  模块要求: ${fullcone_kernel_dependency}" >&2
+        echo "  固件内核: kernel=${firmware_kernel_version:-未知}" >&2
+        exit 1
+    }
+
+    ROOTFS_DIR="$(find "${IB_DIR}/build_dir" -maxdepth 3 -type d -name 'root-x86' -print -quit)"
+    [ -n "${ROOTFS_DIR}" ] || {
+        echo "❌ 错误: 无法定位 ImageBuilder 最终根文件系统。" >&2
+        exit 1
+    }
+    find "${ROOTFS_DIR}/lib/modules" -type f -name 'nft_fullcone.ko' -print -quit |
+        grep -q . || {
+            echo "❌ 错误: 最终根文件系统缺少 nft_fullcone.ko。" >&2
+            exit 1
+        }
+    strings "${ROOTFS_DIR}/usr/sbin/nft" | grep -Fxq fullcone || {
+        echo "❌ 错误: 最终 nftables 不支持 fullcone 语句。" >&2
+        exit 1
+    }
+    rootfs_libnftnl="$(find "${ROOTFS_DIR}/usr/lib" -type f -name 'libnftnl.so.*' -print -quit)"
+    [ -n "${rootfs_libnftnl}" ] || {
+        echo "❌ 错误: 最终根文件系统缺少 libnftnl 共享库。" >&2
+        exit 1
+    }
+    strings "${rootfs_libnftnl}" | grep -Fxq fullcone || {
+        echo "❌ 错误: 最终 libnftnl 不支持 fullcone expression。" >&2
+        exit 1
+    }
+    grep -Fq 'nft_try_fullcone' "${ROOTFS_DIR}/usr/share/ucode/fw4.uc" || {
+        echo "❌ 错误: 最终 firewall4 不包含 FullCone 运行时探测。" >&2
+        exit 1
+    }
+    [ -f "${ROOTFS_DIR}/usr/share/firewall4/templates/zone-fullcone.uc" ] || {
+        echo "❌ 错误: 最终 firewall4 缺少 FullCone 规则模板。" >&2
+        exit 1
+    }
+    [ -x "${ROOTFS_DIR}/usr/sbin/fullcone-check" ] || {
+        echo "❌ 错误: 最终根文件系统缺少 FullCone 运行时验收工具。" >&2
+        exit 1
+    }
+    grep -Fq 'fullcone=1' "${ROOTFS_DIR}/etc/uci-defaults/99-custom-defaults" || {
+        echo "❌ 错误: 最终首次启动配置没有启用 IPv4 FullCone。" >&2
+        exit 1
+    }
     cp -f "${HELLOWORLD_OUTPUT_DIR}/BUILD-INFO.txt" \
         "${BIN_DIR}/helloworld-build-info.txt"
+    cp -f "${FULLCONE_OUTPUT_DIR}/BUILD-INFO.txt" \
+        "${BIN_DIR}/fullcone-build-info.txt"
 
-    # 10. 软件包清单差异比对 (Manifest Diff)
+    # 11. 软件包清单差异比对 (Manifest Diff)
     if [ -n "${MANIFEST_FILE}" ] && [ -f "${SCRIPT_DIR}/diff_manifest.py" ]; then
         python3 "${SCRIPT_DIR}/diff_manifest.py" \
             "${WORK_DIR}/last-manifest.txt" \

@@ -215,7 +215,7 @@ for package_name in "${install_packages[@]}"; do
         '$1 == name { print; exit }' "${OUTPUT_DIR}/repository-packages.txt")"
     [ -n "${constraint}" ] || die "未生成必需 APK: ${package_name}"
     printf '%s\n' "${package_name}" >> "${OUTPUT_DIR}/install-packages.txt"
-    printf '%s@helloworld\n' "${package_name}" \
+    printf '%s@custom\n' "${package_name}" \
         >> "${OUTPUT_DIR}/install-constraints.txt"
 done
 

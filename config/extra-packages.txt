@@ -49,3 +49,11 @@ dnsmasq-full                        # 安装完整版 dnsmasq（SSR Plus 必需�
 kmod-nft-tproxy                     # nftables TPROXY 透明代理内核模块
 kmod-nft-socket                     # nftables socket 匹配内核模块
 kmod-nft-nat                        # nftables NAT 规则扩展支持
+
+# ------------------------------------------------------------------------------
+# 7. nftables FullCone NAT（由完全同版 OpenWrt SDK 编译并锁定到本地仓库）
+# ------------------------------------------------------------------------------
+kmod-nft-fullcone                   # LEDE nft_fullcone 内核 expression 模块
+libnftnl11                          # 增加 fullcone netlink expression 的 libnftnl
+nftables-json                       # 增加 fullcone 语句解析与生成能力的 nftables
+firewall4                           # 增加 UCI fullcone/fullcone6 规则生成能力的 fw4

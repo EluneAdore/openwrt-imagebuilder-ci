@@ -1,0 +1,70 @@
+#!/bin/sh
+set -eu
+
+mode="${1:-status}"
+case "$mode" in
+    syntax|status|restart) ;;
+    *)
+        echo "用法: fullcone-check [syntax|status|restart]" >&2
+        exit 2
+        ;;
+esac
+
+fail() {
+    echo "fullcone-check: $*" >&2
+    exit 1
+}
+
+command -v nft >/dev/null 2>&1 || fail '缺少 nft 命令'
+command -v fw4 >/dev/null 2>&1 || fail '缺少 fw4 命令'
+command -v modprobe >/dev/null 2>&1 || fail '缺少 modprobe 命令'
+
+modprobe nft_fullcone || fail '无法加载 nft_fullcone 内核模块'
+[ -d /sys/module/nft_fullcone ] || fail 'nft_fullcone 模块未处于加载状态'
+
+# nft --check 仍会让内核验证 expression 和 hook，不会提交临时表。
+nft -c -f - <<'EOF' || fail 'nftables 无法解析或验证 fullcone expression'
+table inet fullcone_selftest {
+    chain dstnat {
+        type nat hook prerouting priority -100; policy accept;
+        meta nfproto ipv4 fullcone
+    }
+    chain srcnat {
+        type nat hook postrouting priority 100; policy accept;
+        meta nfproto ipv4 fullcone
+    }
+}
+EOF
+
+rules_file="$(mktemp /tmp/fullcone-fw4.XXXXXX)" || fail '无法创建临时文件'
+trap 'rm -f "$rules_file"' EXIT INT TERM
+fw4 print > "$rules_file" || fail 'fw4 无法生成规则集'
+nft -c -f "$rules_file" || fail 'fw4 生成的 nftables 规则存在语法错误'
+
+fullcone_enabled="$(uci -q get firewall.@defaults[0].fullcone 2>/dev/null || true)"
+if [ "$fullcone_enabled" = '1' ]; then
+    grep -Eq '(^|[[:space:]])fullcone([[:space:]]|$)' "$rules_file" || \
+        fail 'UCI 已启用 FullCone，但 fw4 未生成 fullcone 规则'
+else
+    if grep -Eq '(^|[[:space:]])fullcone([[:space:]]|$)' "$rules_file"; then
+        fail 'UCI 未启用 FullCone，但 fw4 仍生成了 fullcone 规则'
+    fi
+fi
+
+if [ "$mode" = 'restart' ]; then
+    /etc/init.d/firewall restart || fail 'firewall4 重启失败'
+    mode=status
+fi
+
+if [ "$mode" = 'status' ]; then
+    current_rules="$(nft list ruleset)" || fail '无法读取当前 nftables ruleset'
+    if [ "$fullcone_enabled" = '1' ]; then
+        printf '%s\n' "$current_rules" |
+            grep -Eq '(^|[[:space:]])fullcone([[:space:]]|$)' || \
+            fail 'FullCone 已启用，但当前 ruleset 没有 fullcone 规则'
+    elif printf '%s\n' "$current_rules" | grep -Fq 'fullcone NAT'; then
+        fail 'FullCone 已关闭，但当前 fw4 ruleset 仍有 fullcone 规则'
+    fi
+fi
+
+echo "FullCone 检查通过（UCI=$fullcone_enabled，模式=$mode）"
