@@ -380,8 +380,72 @@ if [ -d "${OUTPUT_SOURCE_DIR}" ]; then
             echo "❌ 错误: 最终根文件系统缺少 nft_fullcone.ko。" >&2
             exit 1
         }
-    strings "${ROOTFS_DIR}/usr/sbin/nft" | grep -Fxq fullcone || {
-        echo "❌ 错误: 最终 nftables 不支持 fullcone 语句。" >&2
+    rootfs_nft="${ROOTFS_DIR}/usr/sbin/nft"
+    [ -f "${rootfs_nft}" ] || {
+        echo "❌ 错误: 最终根文件系统缺少 usr/sbin/nft。" >&2
+        exit 1
+    }
+    rootfs_nft_file_type="$(file -b "${rootfs_nft}")"
+    case "${rootfs_nft_file_type}" in
+        *ELF*) ;;
+        *)
+            echo "❌ 错误: 最终 usr/sbin/nft 不是 ELF: ${rootfs_nft_file_type}" >&2
+            exit 1
+            ;;
+    esac
+
+    rootfs_nft_dynamic_info="${WORK_DIR}/rootfs-nft.readelf-dynamic.txt"
+    readelf -d "${rootfs_nft}" > "${rootfs_nft_dynamic_info}"
+    rootfs_libnftables_soname=""
+    while IFS= read -r dynamic_line; do
+        if [[ "${dynamic_line}" =~ Shared[[:space:]]library:[[:space:]]\[(libnftables\.so\.[^]]+)\] ]]; then
+            [ -z "${rootfs_libnftables_soname}" ] || {
+                echo "❌ 错误: 最终 usr/sbin/nft 包含多个 libnftables.so NEEDED 项。" >&2
+                exit 1
+            }
+            rootfs_libnftables_soname="${BASH_REMATCH[1]}"
+        fi
+    done < "${rootfs_nft_dynamic_info}"
+    [ -n "${rootfs_libnftables_soname}" ] || {
+        echo "❌ 错误: 最终 usr/sbin/nft 的 NEEDED 不包含 libnftables.so.*。" >&2
+        exit 1
+    }
+
+    rootfs_libnftables_link="${ROOTFS_DIR}/usr/lib/${rootfs_libnftables_soname}"
+    [ -e "${rootfs_libnftables_link}" ] || {
+        echo "❌ 错误: 最终根文件系统缺少 nft NEEDED 对应的 ${rootfs_libnftables_soname}。" >&2
+        exit 1
+    }
+    if ! rootfs_libnftables="$(readlink -e "${rootfs_libnftables_link}")" || \
+       [ -z "${rootfs_libnftables}" ]; then
+        echo "❌ 错误: 最终 ${rootfs_libnftables_soname} 无法解析到实际共享库。" >&2
+        exit 1
+    fi
+    case "${rootfs_libnftables}" in
+        "${ROOTFS_DIR}/usr/lib/"*) ;;
+        *)
+            echo "❌ 错误: 最终 ${rootfs_libnftables_soname} 解析到 rootfs 之外。" >&2
+            exit 1
+            ;;
+    esac
+    [ -f "${rootfs_libnftables}" ] || {
+        echo "❌ 错误: 最终 ${rootfs_libnftables_soname} 没有对应的实际共享库文件。" >&2
+        exit 1
+    }
+
+    rootfs_nft_strings="${WORK_DIR}/rootfs-nft.strings.txt"
+    strings "${rootfs_nft}" > "${rootfs_nft_strings}"
+    if grep -Fi 'fullcone' "${rootfs_nft_strings}" >/dev/null; then
+        echo "==> 最终 usr/sbin/nft FullCone 字符串诊断:"
+        grep -Fi -C2 'fullcone' "${rootfs_nft_strings}" >&2
+    else
+        echo "==> 最终 usr/sbin/nft FullCone 字符串诊断: 无（parser 位于 libnftables.so）"
+    fi
+
+    rootfs_libnftables_strings="${WORK_DIR}/rootfs-libnftables.strings.txt"
+    strings "${rootfs_libnftables}" > "${rootfs_libnftables_strings}"
+    grep -Fx 'fullcone' "${rootfs_libnftables_strings}" >/dev/null || {
+        echo "❌ 错误: 最终 libnftables.so 不包含 exact fullcone parser 证据。" >&2
         exit 1
     }
     rootfs_libnftnl="$(find "${ROOTFS_DIR}/usr/lib" -type f -name 'libnftnl.so.*' -print -quit)"
@@ -389,7 +453,9 @@ if [ -d "${OUTPUT_SOURCE_DIR}" ]; then
         echo "❌ 错误: 最终根文件系统缺少 libnftnl 共享库。" >&2
         exit 1
     }
-    strings "${rootfs_libnftnl}" | grep -Fxq fullcone || {
+    rootfs_libnftnl_strings="${WORK_DIR}/rootfs-libnftnl.strings.txt"
+    strings "${rootfs_libnftnl}" > "${rootfs_libnftnl_strings}"
+    grep -Fx 'fullcone' "${rootfs_libnftnl_strings}" >/dev/null || {
         echo "❌ 错误: 最终 libnftnl 不支持 fullcone expression。" >&2
         exit 1
     }

@@ -283,42 +283,10 @@ for symbol in \
     grep -Eq "^${symbol}=[ym]$" .config || die "make defconfig 未保留 ${symbol}"
 done
 
-# 确认 OpenWrt 实际生成的 package DAG 能从单一 firewall4 目标覆盖四件套，
-# 并且 nftables 与 FullCone 内核模块共享同一个 linux/compile 前置目标。
-python3 - "${sdk_dir}/tmp/.packagedeps" <<'PY'
-from pathlib import Path
-import sys
-
-path = Path(sys.argv[1])
-if not path.is_file():
-    raise SystemExit("SDK 未生成 tmp/.packagedeps")
-
-dependencies = {}
-for line in path.read_text().splitlines():
-    if "/compile +=" not in line:
-        continue
-    target, prerequisites = line.split(" +=", 1)
-    dependencies[target] = set(prerequisites.split())
-
-firewall4 = "$(curdir)/feeds/base/firewall4/compile"
-nftables = "$(curdir)/feeds/base/nftables/compile"
-libnftnl = "$(curdir)/feeds/base/libnftnl/compile"
-fullcone = "$(curdir)/fullcone/fullconenat-nft/compile"
-linux = "$(curdir)/feeds/base/linux/compile"
-
-required_edges = (
-    (firewall4, nftables),
-    (firewall4, fullcone),
-    (nftables, libnftnl),
-    (nftables, linux),
-    (fullcone, linux),
-)
-for target, prerequisite in required_edges:
-    if prerequisite not in dependencies.get(target, set()):
-        raise SystemExit(
-            f"FullCone package DAG 缺少依赖边: {target} -> {prerequisite}"
-        )
-PY
+# 确认 OpenWrt 实际生成的 package DAG 能从单一 firewall4 目标传递覆盖
+# nftables、libnftnl、FullCone 内核模块及真实的 package/kernel/linux 目标。
+python3 "${WORKSPACE_ROOT}/scripts/validate-fullcone-dag.py" \
+    "${sdk_dir}/tmp/.packagedeps"
 
 readonly -a fullcone_clean_targets=(
     package/feeds/base/libnftnl/clean
@@ -338,11 +306,14 @@ if ! make -j"${JOBS}" package/feeds/base/firewall4/compile DL_DIR="${DOWNLOAD_DI
     die "FullCone 依赖图编译失败；请使用 -j1 V=s 手动重跑以获取详细诊断"
 fi
 
+nftables_build_roots="$(python3 \
+    "${WORKSPACE_ROOT}/scripts/find-nftables-build-roots.py" \
+    "${sdk_dir}/build_dir")" || die "nftables-json build tree 定位器执行失败"
 nftables_build_dirs=()
 while IFS= read -r build_dir; do
+    [ -n "${build_dir}" ] || continue
     nftables_build_dirs+=("${build_dir}")
-done < <(find "${sdk_dir}/build_dir" -type d \
-    -path '*/nftables-json/nftables-*' -print)
+done <<< "${nftables_build_roots}"
 [ ${#nftables_build_dirs[@]} -eq 1 ] || \
     die "nftables-json build tree 数量异常: ${#nftables_build_dirs[@]}"
 nftables_build_dir="${nftables_build_dirs[0]}"

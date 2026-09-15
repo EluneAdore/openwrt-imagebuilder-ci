@@ -1,0 +1,5 @@
+$(curdir)/feeds/base/firewall4/compile += $(curdir)/feeds/base/nftables/compile $(curdir)/feeds/base/ucode/compile $(curdir)/fullcone/fullconenat-nft/compile $(curdir)/kernel/linux/compile $(curdir)/toolchain/compile
+$(curdir)/fullcone/fullconenat-nft/compile += $(curdir)/kernel/linux/compile
+$(curdir)/feeds/base/libnftnl/compile += $(curdir)/feeds/base/libmnl/compile $(curdir)/toolchain/compile
+$(curdir)/kernel/linux/compile += $(curdir)/feeds/base/gpio-button-hotplug/compile $(curdir)/feeds/base/linux-firmware/compile
+$(curdir)/feeds/base/nftables/compile += $(curdir)/feeds/base/jansson/compile $(curdir)/feeds/base/libnftnl/compile $(curdir)/toolchain/compile
