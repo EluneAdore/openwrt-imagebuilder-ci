@@ -91,7 +91,7 @@ jobs:
           path: |
             .work/*.tar.zst
             .work/downloads
-          key: openwrt-sdk-x86_64-${{ steps.version.outputs.version }}-${{ hashFiles('scripts/build-helloworld.sh', 'scripts/build-fullcone.sh', 'fullcone/**') }}
+          key: openwrt-sdk-x86_64-${{ steps.version.outputs.version }}-${{ hashFiles('scripts/build-helloworld.sh', 'scripts/build-fullcone.sh') }}
           restore-keys: |
             openwrt-sdk-x86_64-${{ steps.version.outputs.version }}-
 

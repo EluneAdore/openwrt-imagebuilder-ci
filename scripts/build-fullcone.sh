@@ -16,7 +16,8 @@ TARGET_PATH="${TARGET_PATH:-x86/64}"
 JOBS="${JOBS:-$(nproc)}"
 
 readonly TARGET_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${TARGET_PATH}"
-readonly VENDOR_DIR="${WORKSPACE_ROOT}/fullcone"
+readonly LEDE_REPO="https://github.com/coolsnowwolf/lede.git"
+readonly LEDE_DIR="${WORK_DIR}/lede-source"
 readonly DOWNLOAD_DIR="${WORK_DIR}/downloads"
 
 readonly -a REQUIRED_PACKAGES=(
@@ -35,20 +36,39 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || die "缺少构建命令: $1（请先运行 scripts/setup-env.sh）"
 }
 
-for command_name in curl make patch python3 sha256sum strings tar; do
+for command_name in curl git make patch python3 sha256sum strings tar; do
     require_command "${command_name}"
 done
 
-for source_path in \
-    package/fullconenat-nft/Makefile \
-    package/fullconenat-nft/patches/001-fix-build.patch \
-    patches/libnftnl/001-libnftnl-add-fullcone-expression-support.patch \
-    patches/nftables/100-nftables-add-fullcone-expression-support.patch \
-    patches/firewall4/001-firewall4-add-support-for-fullcone-nat.patch; do
-    [ -f "${VENDOR_DIR}/${source_path}" ] || die "缺少 FullCone 移植文件: ${source_path}"
+mkdir -p "${WORK_DIR}" "${DOWNLOAD_DIR}"
+
+echo "==> 克隆 coolsnowwolf/lede 最新 HEAD..."
+rm -rf "${LEDE_DIR}"
+git clone --depth=1 "${LEDE_REPO}" "${LEDE_DIR}"
+
+lede_head_commit="$(git -C "${LEDE_DIR}" rev-parse HEAD 2>/dev/null || true)"
+[ -n "${lede_head_commit}" ] || die "无法获取 coolsnowwolf/lede HEAD commit"
+echo "==> coolsnowwolf/lede HEAD commit: ${lede_head_commit}"
+
+lede_fullcone_pkg="${LEDE_DIR}/package/network/services/fullconenat-nft"
+[ -d "${lede_fullcone_pkg}" ] || die "LEDE HEAD 缺少 fullconenat-nft package: package/network/services/fullconenat-nft"
+[ -f "${lede_fullcone_pkg}/Makefile" ] || die "LEDE HEAD fullconenat-nft package 缺少 Makefile"
+
+fullcone_upstream_commit="$(sed -n 's/^PKG_SOURCE_VERSION:=[[:space:]]*//p' "${lede_fullcone_pkg}/Makefile" | head -n 1)"
+[ -n "${fullcone_upstream_commit}" ] || die "未能从 LEDE fullconenat-nft/Makefile 中解析 PKG_SOURCE_VERSION"
+echo "==> nft-fullcone 上游源码 commit: ${fullcone_upstream_commit}"
+
+lede_libnftnl_patch="${LEDE_DIR}/package/libs/libnftnl/patches/001-libnftnl-add-fullcone-expression-support.patch"
+lede_nftables_patch="${LEDE_DIR}/package/network/utils/nftables/patches/100-nftables-add-fullcone-expression-support.patch"
+lede_fw4_patch="${LEDE_DIR}/package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch"
+lede_nftables_makefile="${LEDE_DIR}/package/network/utils/nftables/Makefile"
+
+for patch_file in "${lede_libnftnl_patch}" "${lede_nftables_patch}" "${lede_fw4_patch}"; do
+    [ -f "${patch_file}" ] || die "LEDE HEAD 缺少补丁文件: ${patch_file#${LEDE_DIR}/}"
 done
 
-mkdir -p "${WORK_DIR}" "${DOWNLOAD_DIR}"
+grep -Fq 'kmod-nft-fullcone' "${lede_nftables_makefile}" || \
+    die "LEDE HEAD nftables Makefile 未声明 kmod-nft-fullcone 依赖关系"
 
 echo "==> 查询 OpenWrt ${OPENWRT_VERSION} ${TARGET_PATH} 官方 SDK..."
 target_index="$(curl -fsSL --retry 3 --connect-timeout 15 "${TARGET_URL}/")" || \
@@ -121,16 +141,16 @@ base_source="${sdk_dir}/feeds/base"
 [ -d "${base_source}/network/utils/nftables" ] || die "SDK 缺少官方 nftables 源码"
 [ -d "${base_source}/network/config/firewall4" ] || die "SDK 缺少官方 firewall4 源码"
 
-echo "==> 注入经过当前 OpenWrt 源码验证的 LEDE FullCone 补丁..."
+echo "==> 注入从 LEDE HEAD 提取的 FullCone 补丁..."
 install -d \
     "${base_source}/libs/libnftnl/patches" \
     "${base_source}/network/utils/nftables/patches" \
     "${base_source}/network/config/firewall4/patches"
-cp -f "${VENDOR_DIR}/patches/libnftnl/001-libnftnl-add-fullcone-expression-support.patch" \
+cp -f "${lede_libnftnl_patch}" \
     "${base_source}/libs/libnftnl/patches/"
-cp -f "${VENDOR_DIR}/patches/nftables/100-nftables-add-fullcone-expression-support.patch" \
+cp -f "${lede_nftables_patch}" \
     "${base_source}/network/utils/nftables/patches/"
-cp -f "${VENDOR_DIR}/patches/firewall4/001-firewall4-add-support-for-fullcone-nat.patch" \
+cp -f "${lede_fw4_patch}" \
     "${base_source}/network/config/firewall4/patches/"
 
 # LEDE 让 nftables 显式依赖内核 expression。严格匹配官方行，未来上游改动时
@@ -154,7 +174,7 @@ fi
 fullcone_package_dir="${sdk_dir}/package/fullcone/fullconenat-nft"
 rm -rf "${fullcone_package_dir}"
 install -d "$(dirname "${fullcone_package_dir}")"
-cp -a "${VENDOR_DIR}/package/fullconenat-nft" "${fullcone_package_dir}"
+cp -a "${lede_fullcone_pkg}" "${fullcone_package_dir}"
 
 echo "==> 配置 FullCone SDK 编译目标..."
 cat > .config <<'EOF'
@@ -277,8 +297,8 @@ Target: ${TARGET_PATH}
 Architecture: ${SDK_ARCH}
 SDK archive: ${sdk_tarball}
 SDK SHA-256: ${expected_sha256}
-LEDE source snapshot: 611233e63e3e0aefbb6fbac67252e9c44791a7a9
-nft-fullcone source: 07d93b626ce5ea885cd16f9ab07fac3213c355d9
+LEDE source commit: ${lede_head_commit}
+nft-fullcone upstream commit: ${fullcone_upstream_commit}
 Kernel dependency: ${kernel_dependency}
 Patched packages:
 EOF

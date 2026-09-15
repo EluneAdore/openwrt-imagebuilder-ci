@@ -14,25 +14,21 @@ its fixed SDK feeds and official ImageBuilder repositories found no
 `fullconenat-nft`, `kmod-nft-fullcone`, FullCone nftables expression or fw4 UCI
 support.
 
-LEDE master commit `611233e63e3e0aefbb6fbac67252e9c44791a7a9` uses libnftnl 1.3.1 and
-nftables 1.1.6, while its x86 target currently defaults to Linux 6.18.52 and
-retains a 6.12 compatibility patch set. Its nftables FullCone implementation is
-made of:
+In CI builds, the implementation dynamically fetches the latest HEAD of
+`coolsnowwolf/lede` (`master` branch) into a temporary working tree and extracts
+LEDE's actual FullCone implementation:
 
-1. `fullconenat-nft`, which builds `nft_fullcone.ko` from
-   `fullcone-nat-nftables/nft-fullcone` commit
-   `07d93b626ce5ea885cd16f9ab07fac3213c355d9`;
-2. a libnftnl patch that serializes the `fullcone` expression;
-3. an nftables patch that parses and emits the expression;
-4. a firewall4 patch that reads `fullcone`/`fullcone6`, probes expression support
+1. `fullconenat-nft` (`package/network/services/fullconenat-nft`), which builds
+   `nft_fullcone.ko` from upstream `fullcone-nat-nftables/nft-fullcone`;
+2. a libnftnl patch (`001-libnftnl-add-fullcone-expression-support.patch`) that serializes the `fullcone` expression;
+3. an nftables patch (`100-nftables-add-fullcone-expression-support.patch`) that parses and emits the expression;
+4. a firewall4 patch (`001-firewall4-add-support-for-fullcone-nat.patch`) that reads `fullcone`/`fullcone6`, probes expression support
    and emits prerouting/postrouting rules.
 
 The module's LEDE `001-fix-build.patch` selects the Linux 6.12 form of
-`nft_expr_ops.validate`. It was dry-run checked against the OpenWrt 25.12.5 SDK
-kernel tree. The libnftnl and nftables patches apply to the same upstream
-versions used by OpenWrt 25.12.5. The fw4 patch also applies to the newer
-OpenWrt 25.12.5 fw4 source. CI recompiles these four packages instead of
-replacing unrelated firewall components.
+`nft_expr_ops.validate`. The libnftnl and nftables patches apply to the upstream
+versions used by the SDK. The fw4 patch applies to the SDK fw4 source. CI recompiles
+these four packages instead of replacing unrelated firewall components.
 
 The BCM NAT1 kernel patches and every iptables/`xt_FULLCONENAT` component are
 not part of this port. They belong to different implementations and would
@@ -42,20 +38,21 @@ needlessly alter official kernel NAT code.
 
 `scripts/build-fullcone.sh` performs this path:
 
-1. resolve the exact OpenWrt release, `x86/64` target and SDK archive;
-2. verify the SDK SHA-256 and the version recorded inside it;
-3. restore the SDK's release-pinned official feeds;
-4. inject the reviewed LEDE package and three userspace patches;
-5. compile `kmod-nft-fullcone`, `libnftnl11`, `nftables-json` and `firewall4`;
-6. inspect the APK contents and record the module's exact `kernel=...` ABI;
-7. add the signed APKs to the ImageBuilder local `@custom` repository;
-8. force all four packages to come from that repository;
-9. let APK enforce dependencies, then compare the module ABI with the final
-   Manifest kernel version and inspect the assembled root filesystem.
+1. shallow clone `coolsnowwolf/lede` HEAD and verify the required package and patches;
+2. resolve the exact OpenWrt release, `x86/64` target and SDK archive;
+3. verify the SDK SHA-256 and the version recorded inside it;
+4. restore the SDK's release-pinned official feeds;
+5. inject the LEDE package and three userspace patches directly from the LEDE checkout;
+6. compile `kmod-nft-fullcone`, `libnftnl11`, `nftables-json` and `firewall4`;
+7. inspect the APK contents and record the module's exact `kernel=...` ABI;
+8. add the signed APKs to the ImageBuilder local `@custom` repository;
+9. force all four packages to come from that repository;
+10. let APK enforce dependencies, then compare the module ABI with the final
+    Manifest kernel version and inspect the assembled root filesystem.
 
-There is no `--force-depends` path. A download, patch, compile, APK inspection,
-dependency, ABI, ImageBuilder, Manifest or root filesystem check aborts the
-workflow.
+There is no fallback to legacy snapshots or fixed historical commits, and no
+`--force-depends` path. A clone, patch, compile, APK inspection, dependency,
+ABI, ImageBuilder, Manifest or root filesystem check aborts the workflow.
 
 ## UCI and runtime acceptance
 
