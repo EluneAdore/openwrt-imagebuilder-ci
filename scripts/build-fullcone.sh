@@ -177,24 +177,25 @@ install -d "$(dirname "${fullcone_package_dir}")"
 cp -a "${lede_fullcone_pkg}" "${fullcone_package_dir}"
 
 echo "==> 配置 FullCone SDK 编译目标..."
+rm -rf tmp
 cat > .config <<'EOF'
 CONFIG_ALL_NONSHARED=n
 CONFIG_ALL_KMODS=n
 CONFIG_ALL=n
 CONFIG_AUTOREMOVE=n
-CONFIG_PACKAGE_kmod-nft-fullcone=m
-CONFIG_PACKAGE_libnftnl=m
-CONFIG_PACKAGE_nftables-json=m
-CONFIG_PACKAGE_firewall4=m
+CONFIG_PACKAGE_kmod-nft-fullcone=y
+CONFIG_PACKAGE_libnftnl=y
+CONFIG_PACKAGE_nftables-json=y
+CONFIG_PACKAGE_firewall4=y
 EOF
 make defconfig
 
 for symbol in \
-    CONFIG_PACKAGE_kmod-nft-fullcone=m \
-    CONFIG_PACKAGE_libnftnl=m \
-    CONFIG_PACKAGE_nftables-json=m \
-    CONFIG_PACKAGE_firewall4=m; do
-    grep -Fqx "${symbol}" .config || die "make defconfig 未保留 ${symbol}"
+    CONFIG_PACKAGE_kmod-nft-fullcone \
+    CONFIG_PACKAGE_libnftnl \
+    CONFIG_PACKAGE_nftables-json \
+    CONFIG_PACKAGE_firewall4; do
+    grep -Eq "^${symbol}=[ym]$" .config || die "make defconfig 未保留 ${symbol}"
 done
 
 compile_package() {
