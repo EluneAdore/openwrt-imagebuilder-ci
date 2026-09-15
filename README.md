@@ -116,7 +116,7 @@ OPENWRT_VERSION=25.12.5 make build     # 指定特定版本进行构建
 - **增减软件包**：编辑 [`config/extra-packages.txt`](config/extra-packages.txt)，每行一个软件包名称，支持使用 `#` 撰写中文注释（构建脚本会自动剥离注释与空行）。
 - **SSR Plus 源码构建**：[`scripts/build-helloworld.sh`](scripts/build-helloworld.sh) 移植自 [fw876/helloworld 官方 APK CI](https://github.com/fw876/helloworld/blob/dev/.github/workflows/release-packages.yml)。它动态下载与固件完全同版的官方 SDK，校验 SHA-256，使用 SDK 固定的官方 feeds，再编译官方列表中的 `luci-app-ssr-plus`、`xray-core`、`mihomo`；项目按需求排除了 `naiveproxy`，并从同版 OpenWrt 官方 packages feed 安装 `v2ray-geoip` 与 `v2ray-geosite`。
 - **FullCone NAT**：[`scripts/build-fullcone.sh`](scripts/build-fullcone.sh) 动态跟随 ImmortalWrt HEAD，只提取 `fullconenat-nft` package 以及 libnftnl、nftables、firewall4 的 FullCone 补丁。所有组件都在与 ImageBuilder 完全相同版本、target、subtarget、architecture 和 kernel ABI 的官方 OpenWrt SDK 中重新编译。
-- **FullCone LuCI**：[`scripts/build-luci-fullcone.sh`](scripts/build-luci-fullcone.sh) 在官方 OpenWrt LuCI 源码上应用 ImmortalWrt `openwrt-25.12` 的两个最小补丁，重新编译 `luci-base` 与 `luci-app-firewall`。防火墙页面仅在 `nft_fullcone`（或 donor 兼容的 `xt_FULLCONENAT`）模块实际加载时显示 IPv4/IPv6 FullCone 开关。
+- **FullCone LuCI**：[`scripts/build-luci-fullcone.sh`](scripts/build-luci-fullcone.sh) 在官方 OpenWrt LuCI 源码上应用 ImmortalWrt `openwrt-25.12` 的最小功能与简体中文补丁，重新编译 `luci-base`、`luci-app-firewall` 与 `luci-i18n-firewall-zh-cn`。防火墙页面仅在 `nft_fullcone`（或 donor 兼容的 `xt_FULLCONENAT`）模块实际加载时显示 IPv4/IPv6 FullCone 开关。
 - **依赖与来源校验**：编译产生的 helloworld 与 FullCone APK 会组成签名的临时本地仓库；SSR Plus、Xray、Mihomo、中文包及 FullCone 四件套通过 `@custom` 标签锁定到本次源码产物。GeoIP/GeoSite 数据包来自同版 OpenWrt 官方源。构建结束后会检查 Manifest 和 GeoData 文件，缺少任一目标、kernel ABI 不一致或出现 `naiveproxy` 都会使构建失败。
 - **管理第三方软件源**：在 [`config/custom-feeds.conf`](config/custom-feeds.conf) 中按行添加 APK 源地址，URL 支持 `${VERSION_SERIES}` 占位符自动匹配当前 OpenWrt 主版本系列。
 - **自定义首次开机行为**：修改 [`files/etc/uci-defaults/99-custom-defaults`](files/etc/uci-defaults/99-custom-defaults)。该脚本只在固件首次启动时执行，成功后由 OpenWrt 删除，因此之后在 WebUI 中修改 IPv6、FullCone 等配置不会在重启时被重新覆盖。
@@ -133,7 +133,7 @@ OpenWrt 官方稳定版版本与校验和
   → 完全同版 x86/64 SDK
   → ImmortalWrt HEAD FullCone package/patch donor
   → SDK 内重新编译 libnftnl11、nftables-json、kmod-nft-fullcone、firewall4
-  → 官方 LuCI + 最小 FullCone UI patch，重新编译 luci-base、luci-app-firewall
+  → 官方 LuCI + 最小 FullCone UI/i18n patch，重新编译 luci-base、luci-app-firewall、luci-i18n-firewall-zh-cn
   → @custom 签名本地 APK 仓库
   → 完全同版 ImageBuilder
   → Manifest、kernel ABI 与最终 rootfs hard validation
@@ -149,7 +149,8 @@ FullCone 四件套通过一次顶层 `package/feeds/base/firewall4/compile` 调�
 4. 实际 `libnftables.so.*` 包含 exact `fullcone` parser 证据，`libnftnl.so.*` 包含 FullCone expression；
 5. APK 和最终 rootfs 均包含 `nft_fullcone.ko`、firewall4 运行时探测与 `zone-fullcone.uc`；
 6. 最终 Manifest 包含全部四个 FullCone runtime APK 及两个 LuCI APK，且 kmod 的精确 kernel dependency 与固件内核一致；
-7. 最终 rootfs 的 LuCI feature RPC 包含 FullCone 模块检测，防火墙页面包含受 capability 控制的 `fullcone` 与 `fullcone6` 开关。
+7. 最终 rootfs 的 LuCI feature RPC 包含 FullCone 模块检测，防火墙页面包含受 capability 控制的 `fullcone` 与 `fullcone6` 开关；
+8. 简体中文 PO 的两个 FullCone 翻译经过 `po2lmo` 构建进入自编译 `luci-i18n-firewall-zh-cn`，最终 rootfs 包含非空的 `firewall.zh-cn.lmo`。
 
 `strings` 检查会先把完整输出写入临时文件再匹配，避免在 `set -o pipefail` 下因 `grep -q` 提前退出而产生 SIGPIPE 假阴性。
 

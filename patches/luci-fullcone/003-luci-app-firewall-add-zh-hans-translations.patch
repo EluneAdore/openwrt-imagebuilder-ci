@@ -1,0 +1,15 @@
+--- a/applications/luci-app-firewall/po/zh_Hans/firewall.po
++++ b/applications/luci-app-firewall/po/zh_Hans/firewall.po
+@@ -327,6 +327,12 @@
+ msgid "Enable SYN-flood protection"
+ msgstr "启用 SYN-flood 防御"
+ 
++msgid "Enable FullCone NAT"
++msgstr "启用 FullCone NAT"
++
++msgid "Enable FullCone NAT6"
++msgstr "启用 FullCone NAT6"
++
+ #: applications/luci-app-firewall/htdocs/luci-static/resources/view/firewall/forwards.js:346
+ #: applications/luci-app-firewall/htdocs/luci-static/resources/view/firewall/rules.js:464
+ #: applications/luci-app-firewall/htdocs/luci-static/resources/view/firewall/snats.js:339

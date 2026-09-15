@@ -173,6 +173,11 @@ echo "==> 导入自编译本地 APK 仓库..."
 (cd "${HELLOWORLD_OUTPUT_DIR}" && sha256sum --check --strict SHA256SUMS)
 (cd "${FULLCONE_OUTPUT_DIR}" && sha256sum --check --strict SHA256SUMS)
 (cd "${LUCI_FULLCONE_OUTPUT_DIR}" && sha256sum --check --strict SHA256SUMS)
+grep -Fxq 'luci-i18n-firewall-zh-cn@custom' \
+    "${LUCI_FULLCONE_OUTPUT_DIR}/install-constraints.txt" || {
+        echo "❌ 错误: 简体中文 firewall 翻译未锁定到 @custom。" >&2
+        exit 1
+    }
 cmp -s "${HELLOWORLD_OUTPUT_DIR}/helloworld-public-key.pem" \
     "${FULLCONE_OUTPUT_DIR}/fullcone-public-key.pem" || {
         echo "❌ 错误: 两个 SDK 编译阶段的 APK 签名密钥不一致。" >&2
@@ -442,6 +447,10 @@ if [ -d "${OUTPUT_SOURCE_DIR}" ]; then
             echo "❌ 错误: 最终 luci-app-firewall 缺少 IPv6 FullCone 开关。" >&2
             exit 1
         }
+    [ -s "${ROOTFS_DIR}/usr/lib/lua/luci/i18n/firewall.zh-cn.lmo" ] || {
+        echo "❌ 错误: 最终 rootfs 缺少简体中文 firewall 翻译。" >&2
+        exit 1
+    }
     find "${ROOTFS_DIR}/lib/modules" -type f -name 'nft_fullcone.ko' -print -quit |
         grep -q . || {
             echo "❌ 错误: 最终根文件系统缺少 nft_fullcone.ko。" >&2

@@ -13,7 +13,11 @@ JOBS="${JOBS:-$(nproc)}"
 
 readonly IMMORTALWRT_LUCI_BRANCH="openwrt-25.12"
 readonly IMMORTALWRT_LUCI_COMMIT="d6167ea0645cbd1327708d85f94824f42d0eb872"
-readonly -a REQUIRED_PACKAGES=(luci-base luci-app-firewall)
+readonly -a REQUIRED_PACKAGES=(
+    luci-base
+    luci-app-firewall
+    luci-i18n-firewall-zh-cn
+)
 
 WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PATCH_DIR="${WORKSPACE_ROOT}/patches/luci-fullcone"
@@ -34,6 +38,25 @@ validate_firewall_ui() {
         "${zones_file}" || die "${source_label} 缺少 IPv4 FullCone 开关"
     grep -Eq "s\\.option\\(form\\.Flag,[[:space:]]*'fullcone6',[[:space:]]*_\\('Enable FullCone NAT6'\\)\\)" \
         "${zones_file}" || die "${source_label} 缺少 IPv6 FullCone 开关"
+}
+
+validate_zh_hans_po() {
+    local po_file="$1"
+
+    python3 - "${po_file}" <<'PY'
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+translations = {
+    "Enable FullCone NAT": "启用 FullCone NAT",
+    "Enable FullCone NAT6": "启用 FullCone NAT6",
+}
+for msgid, msgstr in translations.items():
+    entry = f'msgid "{msgid}"\nmsgstr "{msgstr}"'
+    if text.count(entry) != 1:
+        raise SystemExit(f"简体中文 PO 缺少唯一且非空的翻译: {msgid}")
+PY
 }
 
 sdk_dirs=()
@@ -57,7 +80,8 @@ git -C "${luci_source}" clean -fd >/dev/null
 echo "==> 应用 ImmortalWrt LuCI FullCone 最小补丁..."
 for patch_file in \
     "${PATCH_DIR}/001-luci-base-detect-fullcone.patch" \
-    "${PATCH_DIR}/002-luci-app-firewall-add-fullcone-options.patch"; do
+    "${PATCH_DIR}/002-luci-app-firewall-add-fullcone-options.patch" \
+    "${PATCH_DIR}/003-luci-app-firewall-add-zh-hans-translations.patch"; do
     [ -f "${patch_file}" ] || die "缺少 LuCI FullCone 补丁: ${patch_file}"
     patch --batch --forward --fuzz=0 -d "${luci_source}" -p1 \
         < "${patch_file}" || die "LuCI FullCone 补丁无法精确应用: $(basename "${patch_file}")"
@@ -65,9 +89,13 @@ done
 
 luci_rpc="${luci_source}/modules/luci-base/root/usr/share/rpcd/ucode/luci"
 luci_zones="${luci_source}/applications/luci-app-firewall/htdocs/luci-static/resources/view/firewall/zones.js"
+luci_firewall_po="${luci_source}/applications/luci-app-firewall/po/zh_Hans/firewall.po"
 grep -Fq "fullcone:   access('/sys/module/xt_FULLCONENAT/refcnt') == true || access('/sys/module/nft_fullcone/refcnt') == true," \
     "${luci_rpc}" || die "patched luci-base 缺少 FullCone capability detection"
 validate_firewall_ui "${luci_zones}" 'patched luci-app-firewall'
+validate_zh_hans_po "${luci_firewall_po}"
+grep -Fq "po2lmo \$(po)" "${luci_source}/luci.mk" || \
+    die "官方 LuCI 构建规则缺少 PO → LMO 转换"
 
 cd "${sdk_dir}"
 rm -rf tmp
@@ -76,8 +104,10 @@ CONFIG_ALL_NONSHARED=n
 CONFIG_ALL_KMODS=n
 CONFIG_ALL=n
 CONFIG_AUTOREMOVE=n
+CONFIG_LUCI_LANG_zh_Hans=y
 CONFIG_PACKAGE_luci-base=y
 CONFIG_PACKAGE_luci-app-firewall=y
+CONFIG_PACKAGE_luci-i18n-firewall-zh-cn=y
 EOF
 make defconfig
 for package_name in "${REQUIRED_PACKAGES[@]}"; do
@@ -127,14 +157,20 @@ cp -f "${sdk_dir}/public-key.pem" "${OUTPUT_DIR}/luci-fullcone-public-key.pem"
 extract_dir="$(mktemp -d "${WORK_DIR}/luci-fullcone-apk.XXXXXX")"
 trap 'rm -rf "${extract_dir}"' EXIT INT TERM
 for apk_file in "${OUTPUT_DIR}"/*.apk; do
-    "${apk_tool}" --allow-untrusted extract --destination "${extract_dir}" \
+    package_name="$(apk_field "${apk_file}" name)"
+    package_extract_dir="${extract_dir}/${package_name}"
+    mkdir -p "${package_extract_dir}"
+    "${apk_tool}" --allow-untrusted extract --destination "${package_extract_dir}" \
         "${apk_file}" >/dev/null
 done
 grep -Fq "fullcone:   access('/sys/module/xt_FULLCONENAT/refcnt') == true || access('/sys/module/nft_fullcone/refcnt') == true," \
-    "${extract_dir}/usr/share/rpcd/ucode/luci" || \
+    "${extract_dir}/luci-base/usr/share/rpcd/ucode/luci" || \
     die "luci-base APK 缺少 FullCone capability detection"
-zones_file="${extract_dir}/www/luci-static/resources/view/firewall/zones.js"
+zones_file="${extract_dir}/luci-app-firewall/www/luci-static/resources/view/firewall/zones.js"
 validate_firewall_ui "${zones_file}" 'luci-app-firewall APK'
+firewall_lmo="${extract_dir}/luci-i18n-firewall-zh-cn/usr/lib/lua/luci/i18n/firewall.zh-cn.lmo"
+[ -s "${firewall_lmo}" ] || \
+    die "luci-i18n-firewall-zh-cn APK 缺少非空 firewall.zh-cn.lmo"
 
 : > "${OUTPUT_DIR}/install-packages.txt"
 : > "${OUTPUT_DIR}/install-constraints.txt"
