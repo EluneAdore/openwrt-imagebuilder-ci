@@ -66,6 +66,7 @@ CONFIG_DIR="${WORKSPACE_ROOT}/config"
 FILES_DIR="${WORKSPACE_ROOT}/files"
 HELLOWORLD_OUTPUT_DIR="${WORK_DIR}/helloworld-packages-${OPENWRT_VERSION}"
 FULLCONE_OUTPUT_DIR="${WORK_DIR}/fullcone-packages-${OPENWRT_VERSION}"
+LUCI_FULLCONE_OUTPUT_DIR="${WORK_DIR}/luci-fullcone-packages-${OPENWRT_VERSION}"
 
 IB_TARBALL="openwrt-imagebuilder-${OPENWRT_VERSION}-${ARCH}.Linux-x86_64.tar.zst"
 IB_DIR_NAME="openwrt-imagebuilder-${OPENWRT_VERSION}-${ARCH}.Linux-x86_64"
@@ -151,7 +152,7 @@ ARCH="${ARCH}" \
 GO_FEED_BRANCH="${GO_FEED_BRANCH:-master}" \
 "${SCRIPT_DIR}/build-helloworld.sh"
 
-# 4. 使用同一个官方 SDK 编译 LEDE nftables FullCone 调用链
+# 4. 使用同一个官方 SDK 编译 ImmortalWrt nftables FullCone 调用链
 echo "==> 开始源码编译 FullCone APK 调用链..."
 OPENWRT_VERSION="${OPENWRT_VERSION}" \
 WORK_DIR="${WORK_DIR}" \
@@ -159,13 +160,27 @@ OUTPUT_DIR="${FULLCONE_OUTPUT_DIR}" \
 ARCH="${ARCH}" \
 "${SCRIPT_DIR}/build-fullcone.sh"
 
-# 5. 将所有同版 SDK 产物导入 ImageBuilder 本地 APK 仓库
+# 5. 在官方 LuCI 上编译 FullCone capability detection 与防火墙开关
+echo "==> 开始编译 FullCone LuCI APK..."
+OPENWRT_VERSION="${OPENWRT_VERSION}" \
+WORK_DIR="${WORK_DIR}" \
+OUTPUT_DIR="${LUCI_FULLCONE_OUTPUT_DIR}" \
+ARCH="${ARCH}" \
+"${SCRIPT_DIR}/build-luci-fullcone.sh"
+
+# 6. 将所有同版 SDK 产物导入 ImageBuilder 本地 APK 仓库
 echo "==> 导入自编译本地 APK 仓库..."
 (cd "${HELLOWORLD_OUTPUT_DIR}" && sha256sum --check --strict SHA256SUMS)
 (cd "${FULLCONE_OUTPUT_DIR}" && sha256sum --check --strict SHA256SUMS)
+(cd "${LUCI_FULLCONE_OUTPUT_DIR}" && sha256sum --check --strict SHA256SUMS)
 cmp -s "${HELLOWORLD_OUTPUT_DIR}/helloworld-public-key.pem" \
     "${FULLCONE_OUTPUT_DIR}/fullcone-public-key.pem" || {
         echo "❌ 错误: 两个 SDK 编译阶段的 APK 签名密钥不一致。" >&2
+        exit 1
+    }
+cmp -s "${FULLCONE_OUTPUT_DIR}/fullcone-public-key.pem" \
+    "${LUCI_FULLCONE_OUTPUT_DIR}/luci-fullcone-public-key.pem" || {
+        echo "❌ 错误: FullCone runtime 与 LuCI APK 签名密钥不一致。" >&2
         exit 1
     }
 mkdir -p "${IB_DIR}/packages" "${IB_DIR}/keys"
@@ -174,7 +189,8 @@ mkdir -p "${IB_DIR}/packages" "${IB_DIR}/keys"
 for local_manifest in \
     "${IB_DIR}/packages/.custom-local-packages" \
     "${IB_DIR}/packages/.helloworld-local-packages" \
-    "${IB_DIR}/packages/.fullcone-local-packages"; do
+    "${IB_DIR}/packages/.fullcone-local-packages" \
+    "${IB_DIR}/packages/.luci-fullcone-local-packages"; do
     if [ -f "${local_manifest}" ]; then
         while IFS= read -r package_name; do
             case "${package_name}" in
@@ -189,6 +205,7 @@ LOCAL_PACKAGE_MANIFEST="${IB_DIR}/packages/.custom-local-packages"
 shopt -s nullglob
 HELLOWORLD_APKS=("${HELLOWORLD_OUTPUT_DIR}"/*.apk)
 FULLCONE_APKS=("${FULLCONE_OUTPUT_DIR}"/*.apk)
+LUCI_FULLCONE_APKS=("${LUCI_FULLCONE_OUTPUT_DIR}"/*.apk)
 shopt -u nullglob
 [ ${#HELLOWORLD_APKS[@]} -gt 0 ] || {
     echo "❌ 错误: helloworld 构建目录中没有 APK。" >&2
@@ -198,7 +215,14 @@ shopt -u nullglob
     echo "❌ 错误: FullCone 构建目录中没有 APK。" >&2
     exit 1
 }
-for package_file in "${HELLOWORLD_APKS[@]}" "${FULLCONE_APKS[@]}"; do
+[ ${#LUCI_FULLCONE_APKS[@]} -gt 0 ] || {
+    echo "❌ 错误: FullCone LuCI 构建目录中没有 APK。" >&2
+    exit 1
+}
+for package_file in \
+    "${HELLOWORLD_APKS[@]}" \
+    "${FULLCONE_APKS[@]}" \
+    "${LUCI_FULLCONE_APKS[@]}"; do
     package_name="$(basename "${package_file}")"
     if [ -e "${IB_DIR}/packages/${package_name}" ]; then
         echo "❌ 错误: 本地 APK 文件名冲突: ${package_name}" >&2
@@ -217,9 +241,9 @@ printf '%s\n' "${LOCAL_REPOSITORY}" >> "${IB_DIR}/repositories"
 
 # APK 或签名密钥变化后强制 ImageBuilder 重建并签名本地仓库索引。
 rm -f "${IB_DIR}/packages/packages.adb"
-echo "  已导入 $(( ${#HELLOWORLD_APKS[@]} + ${#FULLCONE_APKS[@]} )) 个 APK。"
+echo "  已导入 $(( ${#HELLOWORLD_APKS[@]} + ${#FULLCONE_APKS[@]} + ${#LUCI_FULLCONE_APKS[@]} )) 个 APK。"
 
-# 6. 配置自定义第三方软件源 (自动替换 ${VERSION_SERIES} 动态系列)
+# 7. 配置自定义第三方软件源 (自动替换 ${VERSION_SERIES} 动态系列)
 echo "==> 正在配置自定义软件源 (分支代号: ${VERSION_SERIES})..."
 if [ -f "${CONFIG_DIR}/custom-feeds.conf" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
@@ -260,7 +284,8 @@ while IFS= read -r constraint; do
     PACKAGE_LIST=("${filtered_packages[@]}" "${constraint}")
 done < <(cat \
     "${HELLOWORLD_OUTPUT_DIR}/install-constraints.txt" \
-    "${FULLCONE_OUTPUT_DIR}/install-constraints.txt")
+    "${FULLCONE_OUTPUT_DIR}/install-constraints.txt" \
+    "${LUCI_FULLCONE_OUTPUT_DIR}/install-constraints.txt")
 
 PACKAGES="${PACKAGE_LIST[*]}"
 echo "  包含增量包: ${PACKAGES}"
@@ -353,6 +378,12 @@ if [ -d "${OUTPUT_SOURCE_DIR}" ]; then
         echo "❌ 错误: 固件中意外包含 naiveproxy。" >&2
         exit 1
     fi
+    while IFS= read -r required_package; do
+        if ! awk '{print $1}' "${MANIFEST_FILE}" | grep -Fxq "${required_package}"; then
+            echo "❌ 错误: 固件 Manifest 缺少 FullCone LuCI 组件 ${required_package}。" >&2
+            exit 1
+        fi
+    done < "${LUCI_FULLCONE_OUTPUT_DIR}/install-packages.txt"
 
     # FullCone 四层调用链和精确 kernel ABI 都必须出现在最终固件中。
     while IFS= read -r required_package; do
@@ -385,6 +416,32 @@ if [ -d "${OUTPUT_SOURCE_DIR}" ]; then
             exit 1
         }
     done
+    luci_feature_rpc="${ROOTFS_DIR}/usr/share/rpcd/ucode/luci"
+    grep -Fq "fullcone:   access('/sys/module/xt_FULLCONENAT/refcnt') == true || access('/sys/module/nft_fullcone/refcnt') == true," \
+        "${luci_feature_rpc}" || {
+            echo "❌ 错误: 最终 luci-base 缺少 FullCone capability detection。" >&2
+            exit 1
+        }
+    grep -Fq 'ubus call luci getFeatures' "${ROOTFS_DIR}/usr/sbin/fullcone-check" || {
+        echo "❌ 错误: 最终 fullcone-check 缺少 LuCI capability 运行时验收。" >&2
+        exit 1
+    }
+    luci_firewall_zones="${ROOTFS_DIR}/www/luci-static/resources/view/firewall/zones.js"
+    grep -Eq "if[[:space:]]*\\([[:space:]]*L\\.hasSystemFeature\\('fullcone'\\)[[:space:]]*\\)" \
+        "${luci_firewall_zones}" || {
+        echo "❌ 错误: 最终 luci-app-firewall 未按 capability 控制 FullCone UI。" >&2
+        exit 1
+    }
+    grep -Eq "s\\.option\\(form\\.Flag,[[:space:]]*'fullcone',[[:space:]]*_\\('Enable FullCone NAT'\\)\\)" \
+        "${luci_firewall_zones}" || {
+            echo "❌ 错误: 最终 luci-app-firewall 缺少 IPv4 FullCone 开关。" >&2
+            exit 1
+        }
+    grep -Eq "s\\.option\\(form\\.Flag,[[:space:]]*'fullcone6',[[:space:]]*_\\('Enable FullCone NAT6'\\)\\)" \
+        "${luci_firewall_zones}" || {
+            echo "❌ 错误: 最终 luci-app-firewall 缺少 IPv6 FullCone 开关。" >&2
+            exit 1
+        }
     find "${ROOTFS_DIR}/lib/modules" -type f -name 'nft_fullcone.ko' -print -quit |
         grep -q . || {
             echo "❌ 错误: 最终根文件系统缺少 nft_fullcone.ko。" >&2
@@ -489,6 +546,8 @@ if [ -d "${OUTPUT_SOURCE_DIR}" ]; then
         "${BIN_DIR}/helloworld-build-info.txt"
     cp -f "${FULLCONE_OUTPUT_DIR}/BUILD-INFO.txt" \
         "${BIN_DIR}/fullcone-build-info.txt"
+    cp -f "${LUCI_FULLCONE_OUTPUT_DIR}/BUILD-INFO.txt" \
+        "${BIN_DIR}/luci-fullcone-build-info.txt"
 
     # 11. 软件包清单差异比对 (Manifest Diff)
     if [ -n "${MANIFEST_FILE}" ] && [ -f "${SCRIPT_DIR}/diff_manifest.py" ]; then

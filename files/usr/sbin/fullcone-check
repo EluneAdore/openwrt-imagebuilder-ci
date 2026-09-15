@@ -3,9 +3,9 @@ set -eu
 
 mode="${1:-status}"
 case "$mode" in
-    syntax|status|restart) ;;
+    syntax|status|restart|luci) ;;
     *)
-        echo "用法: fullcone-check [syntax|status|restart]" >&2
+        echo "用法: fullcone-check [syntax|status|restart|luci]" >&2
         exit 2
         ;;
 esac
@@ -21,6 +21,18 @@ command -v modprobe >/dev/null 2>&1 || fail '缺少 modprobe 命令'
 
 modprobe nft_fullcone || fail '无法加载 nft_fullcone 内核模块'
 [ -d /sys/module/nft_fullcone ] || fail 'nft_fullcone 模块未处于加载状态'
+
+if [ "$mode" = 'luci' ]; then
+    command -v ubus >/dev/null 2>&1 || fail '缺少 ubus 命令'
+    command -v jsonfilter >/dev/null 2>&1 || fail '缺少 jsonfilter 命令'
+    luci_features="$(ubus call luci getFeatures)" || \
+        fail '无法调用 luci getFeatures'
+    luci_fullcone="$(printf '%s\n' "$luci_features" | jsonfilter -e '@.fullcone')" || \
+        fail 'luci getFeatures 未返回 fullcone capability'
+    [ "$luci_fullcone" = 'true' ] || [ "$luci_fullcone" = '1' ] || \
+        fail "luci getFeatures 返回 fullcone=$luci_fullcone"
+    mode=status
+fi
 
 # nft --check 仍会让内核验证 expression 和 hook，不会提交临时表。
 nft -c -f - <<'EOF' || fail 'nftables 无法解析或验证 fullcone expression'

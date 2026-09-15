@@ -91,7 +91,7 @@ jobs:
           path: |
             .work/*.tar.zst
             .work/downloads
-          key: openwrt-sdk-x86_64-${{ steps.version.outputs.version }}-${{ hashFiles('scripts/build-helloworld.sh', 'scripts/build-fullcone.sh') }}
+          key: openwrt-sdk-x86_64-${{ steps.version.outputs.version }}-${{ hashFiles('scripts/build-helloworld.sh', 'scripts/build-fullcone.sh', 'scripts/build-luci-fullcone.sh', 'patches/luci-fullcone/*.patch') }}
           restore-keys: |
             openwrt-sdk-x86_64-${{ steps.version.outputs.version }}-
 
@@ -175,6 +175,7 @@ jobs:
             bin/manifest.md
             bin/helloworld-build-info.txt
             bin/fullcone-build-info.txt
+            bin/luci-fullcone-build-info.txt
           body: |
             ## OpenWrt x86_64 UEFI 自动构建固件发布
 
@@ -189,7 +190,7 @@ jobs:
               - ⚡ 队列流控: SQM (带抗延迟 `CAKE` 算法)
               - 💻 网页终端: `ttyd`
               - 🌍 SSR Plus: 按 fw876/helloworld 官方 CI 从源码编译 `luci-app-ssr-plus`、`xray-core`、`mihomo`（排除 `naiveproxy`）
-              - 🔄 FullCone NAT: 使用完全同版 OpenWrt SDK 编译 ImmortalWrt HEAD 的 `nft_fullcone`、libnftnl、nftables 与 firewall4 调用链
+              - 🔄 FullCone NAT: 使用完全同版 OpenWrt SDK 编译 ImmortalWrt HEAD 的 runtime 调用链，并最小 backport LuCI 防火墙开关
               - 🕒 权威授时: 阿里云 / 腾讯云 / 国家授时中心 NTP
               - 🔑 安全加固: SSH 仅限 LAN 口监听并支持免密密钥认证
 
