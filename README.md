@@ -17,7 +17,7 @@
   - SQM CAKE 智能抗缓冲膨胀流控调度；
   - 浏览器免客户端网页终端 `ttyd`；
   - 从 ImmortalWrt HEAD 提取 nftables FullCone NAT 源码与补丁，并在完全同版 OpenWrt SDK 中重新编译完整调用链；
-  - 按 fw876/helloworld 官方 CI 流程源码编译 SSR Plus、Xray 与 Mihomo，并集成简体中文界面；
+  - 按 fw876/helloworld 官方 CI 流程源码编译 SSR Plus、Xray 与 Mihomo，集成简体中文界面及 GeoIP/GeoSite 数据库；
   - 预设国内权威 NTP 授时服务池（阿里云、腾讯云、国家授时中心）。
 - **自动化与差分报告**：
   - 镜像文件名自动附带构建时间戳；
@@ -113,9 +113,9 @@ OPENWRT_VERSION=25.12.5 make build     # 指定特定版本进行构建
 ## ⚙️ 自定义配置指南
 
 - **增减软件包**：编辑 [`config/extra-packages.txt`](config/extra-packages.txt)，每行一个软件包名称，支持使用 `#` 撰写中文注释（构建脚本会自动剥离注释与空行）。
-- **SSR Plus 源码构建**：[`scripts/build-helloworld.sh`](scripts/build-helloworld.sh) 移植自 [fw876/helloworld 官方 APK CI](https://github.com/fw876/helloworld/blob/dev/.github/workflows/release-packages.yml)。它动态下载与固件完全同版的官方 SDK，校验 SHA-256，使用 SDK 固定的官方 feeds，再编译官方列表中的 `luci-app-ssr-plus`、`xray-core`、`mihomo`；项目按需求排除了 `naiveproxy`。
+- **SSR Plus 源码构建**：[`scripts/build-helloworld.sh`](scripts/build-helloworld.sh) 移植自 [fw876/helloworld 官方 APK CI](https://github.com/fw876/helloworld/blob/dev/.github/workflows/release-packages.yml)。它动态下载与固件完全同版的官方 SDK，校验 SHA-256，使用 SDK 固定的官方 feeds，再编译官方列表中的 `luci-app-ssr-plus`、`xray-core`、`mihomo`；项目按需求排除了 `naiveproxy`，并从同版 OpenWrt 官方 packages feed 安装 `v2ray-geoip` 与 `v2ray-geosite`。
 - **FullCone NAT**：[`scripts/build-fullcone.sh`](scripts/build-fullcone.sh) 动态跟随 ImmortalWrt HEAD，只提取 `fullconenat-nft` package 以及 libnftnl、nftables、firewall4 的 FullCone 补丁。所有组件都在与 ImageBuilder 完全相同版本、target、subtarget、architecture 和 kernel ABI 的官方 OpenWrt SDK 中重新编译。
-- **依赖与来源校验**：编译产生的 helloworld 与 FullCone APK 会组成签名的临时本地仓库；SSR Plus、Xray、Mihomo、中文包及 FullCone 四件套通过 `@custom` 标签锁定到本次源码产物。构建结束后会检查 Manifest，缺少任一目标、kernel ABI 不一致或出现 `naiveproxy` 都会使构建失败。
+- **依赖与来源校验**：编译产生的 helloworld 与 FullCone APK 会组成签名的临时本地仓库；SSR Plus、Xray、Mihomo、中文包及 FullCone 四件套通过 `@custom` 标签锁定到本次源码产物。GeoIP/GeoSite 数据包来自同版 OpenWrt 官方源。构建结束后会检查 Manifest 和 GeoData 文件，缺少任一目标、kernel ABI 不一致或出现 `naiveproxy` 都会使构建失败。
 - **管理第三方软件源**：在 [`config/custom-feeds.conf`](config/custom-feeds.conf) 中按行添加 APK 源地址，URL 支持 `${VERSION_SERIES}` 占位符自动匹配当前 OpenWrt 主版本系列。
 - **自定义首次开机行为**：修改 [`files/etc/uci-defaults/99-custom-defaults`](files/etc/uci-defaults/99-custom-defaults)。该脚本只在固件首次启动时执行，成功后由 OpenWrt 删除，因此之后在 WebUI 中修改 IPv6、FullCone 等配置不会在重启时被重新覆盖。
 - **追加自定义系统文件**：将需要预置的文件直接放入 [`files/`](files/) 目录（映射为路由器系统的根路径 `/`），编译时将自动合并进固件中。

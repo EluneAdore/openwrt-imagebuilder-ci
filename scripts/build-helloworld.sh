@@ -26,6 +26,10 @@ readonly -a BUILD_PACKAGES=(
     xray-core
     mihomo
 )
+readonly -a GEODATA_PACKAGES=(
+    v2ray-geoip
+    v2ray-geosite
+)
 
 die() {
     echo "❌ $*" >&2
@@ -141,7 +145,7 @@ CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_DNS2TCP=n
 CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_MosDNS=n
 CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Http_Proxy=n
 CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Mihomo=n
-CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_GeoData=n
+CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_GeoData=y
 CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Shadow_TLS=n
 CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_Kcptun=n
 CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_NaiveProxy=n
@@ -160,6 +164,12 @@ make defconfig
 for package_name in "${BUILD_PACKAGES[@]}"; do
     grep -Fqx "CONFIG_PACKAGE_${package_name}=m" .config || \
         die "make defconfig 未保留 ${package_name}=m"
+done
+grep -Fqx 'CONFIG_PACKAGE_luci-app-ssr-plus_INCLUDE_GeoData=y' .config || \
+    die "make defconfig 未启用 SSR Plus GeoData"
+for geodata_package in "${GEODATA_PACKAGES[@]}"; do
+    grep -Eq "^CONFIG_PACKAGE_${geodata_package}=[my]$" .config || \
+        die "make defconfig 未选中 ${geodata_package}"
 done
 if grep -Eq '^CONFIG_PACKAGE_naiveproxy=[my]$' .config; then
     die "naiveproxy 被意外选中"
@@ -220,11 +230,12 @@ done
 sort -u -o "${OUTPUT_DIR}/repository-packages.txt" \
     "${OUTPUT_DIR}/repository-packages.txt"
 
-# 三个官方目标必须生成；中文包由 LUCI_LANG_zh_Hans 同步生成并安装。
+# 三个 helloworld 目标必须生成；中文包由 LUCI_LANG_zh_Hans 同步生成。
+# GeoData 使用同版 OpenWrt 官方 packages feed，并作为最终固件目标安装。
 : > "${OUTPUT_DIR}/install-packages.txt"
 : > "${OUTPUT_DIR}/install-constraints.txt"
-install_packages=("${BUILD_PACKAGES[@]}" luci-i18n-ssr-plus-zh-cn)
-for package_name in "${install_packages[@]}"; do
+custom_install_packages=("${BUILD_PACKAGES[@]}" luci-i18n-ssr-plus-zh-cn)
+for package_name in "${custom_install_packages[@]}"; do
     constraint="$(awk -F= -v name="${package_name}" \
         '$1 == name { print; exit }' "${OUTPUT_DIR}/repository-packages.txt")"
     [ -n "${constraint}" ] || die "未生成必需 APK: ${package_name}"
@@ -232,6 +243,10 @@ for package_name in "${install_packages[@]}"; do
     printf '%s@custom\n' "${package_name}" \
         >> "${OUTPUT_DIR}/install-constraints.txt"
 done
+printf '%s\n' "${GEODATA_PACKAGES[@]}" \
+    >> "${OUTPUT_DIR}/install-packages.txt"
+printf '%s\n' "${GEODATA_PACKAGES[@]}" \
+    >> "${OUTPUT_DIR}/install-constraints.txt"
 
 if grep -Eq '^naiveproxy=' "${OUTPUT_DIR}/repository-packages.txt"; then
     die "输出仓库中意外出现 naiveproxy"
@@ -251,12 +266,13 @@ helloworld ref: ${HELLOWORLD_REF}
 helloworld commit: ${helloworld_commit}
 Go feed branch: ${GO_FEED_BRANCH:-none}
 Compiled targets: ${BUILD_PACKAGES[*]}
+Official GeoData packages: ${GEODATA_PACKAGES[*]}
 
 Excluded target: naiveproxy
 Repository APK count: ${#package_files[@]}
 Installed target versions:
 EOF
-for package_name in "${install_packages[@]}"; do
+for package_name in "${custom_install_packages[@]}"; do
     awk -F= -v name="${package_name}" \
         '$1 == name { print "  " $0; exit }' \
         "${OUTPUT_DIR}/repository-packages.txt" \

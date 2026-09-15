@@ -375,6 +375,16 @@ if [ -d "${OUTPUT_SOURCE_DIR}" ]; then
         echo "❌ 错误: 无法定位 ImageBuilder 最终根文件系统。" >&2
         exit 1
     }
+    for geodata_file in \
+        usr/share/v2ray/geoip.dat \
+        usr/share/v2ray/geosite.dat \
+        usr/share/xray/geoip.dat \
+        usr/share/xray/geosite.dat; do
+        [ -s "${ROOTFS_DIR}/${geodata_file}" ] || {
+            echo "❌ 错误: 最终根文件系统缺少 GeoData 文件 ${geodata_file}。" >&2
+            exit 1
+        }
+    done
     find "${ROOTFS_DIR}/lib/modules" -type f -name 'nft_fullcone.ko' -print -quit |
         grep -q . || {
             echo "❌ 错误: 最终根文件系统缺少 nft_fullcone.ko。" >&2
