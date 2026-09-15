@@ -46,7 +46,9 @@ echo "==> 克隆 ImmortalWrt 最新 HEAD..."
 rm -rf "${IMMORTALWRT_DIR}"
 git clone --depth=1 "${IMMORTALWRT_REPO}" "${IMMORTALWRT_DIR}"
 
-immortalwrt_head_commit="$(git -C "${IMMORTALWRT_DIR}" rev-parse HEAD 2>/dev/null || true)"
+if ! immortalwrt_head_commit="$(git -C "${IMMORTALWRT_DIR}" rev-parse HEAD 2>/dev/null)"; then
+    die "无法获取 ImmortalWrt HEAD commit"
+fi
 [[ "${immortalwrt_head_commit}" =~ ^[0-9a-f]{40}$ ]] || \
     die "无法获取 ImmortalWrt HEAD commit"
 echo "==> ImmortalWrt HEAD commit: ${immortalwrt_head_commit}"
@@ -68,6 +70,7 @@ echo "==> nft-fullcone 上游源码 commit: ${fullcone_upstream_commit}"
 echo "==> nft-fullcone 源码归档 hash: ${fullcone_mirror_hash}"
 
 immortalwrt_libnftnl_patch="${IMMORTALWRT_DIR}/package/libs/libnftnl/patches/001-libnftnl-add-fullcone-expression-support.patch"
+immortalwrt_libnftnl_makefile="${IMMORTALWRT_DIR}/package/libs/libnftnl/Makefile"
 immortalwrt_nftables_patch="${IMMORTALWRT_DIR}/package/network/utils/nftables/patches/002-nftables-add-fullcone-expression-support.patch"
 immortalwrt_fw4_patch="${IMMORTALWRT_DIR}/package/network/config/firewall4/patches/001-firewall4-add-support-for-fullcone-nat.patch"
 immortalwrt_fw4_makefile="${IMMORTALWRT_DIR}/package/network/config/firewall4/Makefile"
@@ -76,6 +79,11 @@ for patch_file in "${immortalwrt_libnftnl_patch}" "${immortalwrt_nftables_patch}
     [ -f "${patch_file}" ] || \
         die "ImmortalWrt HEAD 缺少补丁文件: ${patch_file#${IMMORTALWRT_DIR}/}"
 done
+
+[ -f "${immortalwrt_libnftnl_makefile}" ] || \
+    die "ImmortalWrt HEAD 缺少 libnftnl Makefile"
+grep -Fxq 'PKG_FIXUP:=autoreconf' "${immortalwrt_libnftnl_makefile}" || \
+    die "ImmortalWrt HEAD libnftnl Makefile 未声明 PKG_FIXUP:=autoreconf"
 
 grep -Fq '+kmod-nft-fullcone' "${immortalwrt_fw4_makefile}" || \
     die "ImmortalWrt HEAD firewall4 Makefile 未声明 kmod-nft-fullcone 依赖关系"
@@ -90,9 +98,13 @@ grep -Fq '$(subst -,.,$(PKG_SOURCE_DATE)),0)~$(call version_abbrev,$(PKG_SOURCE_
 echo "==> 查询 OpenWrt ${OPENWRT_VERSION} ${TARGET_PATH} 官方 SDK..."
 target_index="$(curl -fsSL --retry 3 --connect-timeout 15 "${TARGET_URL}/")" || \
     die "无法读取 OpenWrt SDK 下载目录: ${TARGET_URL}/"
-sdk_candidates="$(printf '%s' "${target_index}" |
-    grep -oE "openwrt-sdk-${OPENWRT_VERSION//./\\.}-${ARCH}_[^\"<>[:space:]]+\\.Linux-x86_64\\.tar\\.zst" |
-    sort -u || true)"
+sdk_matches=""
+if sdk_matches="$(printf '%s' "${target_index}" |
+    grep -oE "openwrt-sdk-${OPENWRT_VERSION//./\\.}-${ARCH}_[^\"<>[:space:]]+\\.Linux-x86_64\\.tar\\.zst")"; then
+    sdk_candidates="$(printf '%s\n' "${sdk_matches}" | sort -u)"
+else
+    sdk_candidates=""
+fi
 sdk_tarball="$(printf '%s\n' "${sdk_candidates}" | sed -n '1p')"
 [ -n "${sdk_tarball}" ] || die "未找到 OpenWrt ${OPENWRT_VERSION} 的 ${TARGET_PATH} SDK"
 [ "$(printf '%s\n' "${sdk_candidates}" | sed '/^$/d' | wc -l)" -eq 1 ] || \
@@ -144,7 +156,12 @@ sdk_version="$(sed -n 's/^VERSION_NUMBER:=.*,[[:space:]]*\([^,)]*\))$/\1/p' incl
 expected_base_commit="$(sed -n \
     's#^src-git --root=package base .*\^\([0-9a-f][0-9a-f]*\)$#\1#p' \
     feeds.conf.default)"
-actual_base_commit="$(git -C feeds/base_root rev-parse HEAD 2>/dev/null || true)"
+actual_base_commit=""
+if [ -d feeds/base_root ]; then
+    if ! actual_base_commit="$(git -C feeds/base_root rev-parse HEAD 2>/dev/null)"; then
+        actual_base_commit=""
+    fi
+fi
 if [ -n "${expected_base_commit}" ] && \
    [ "${actual_base_commit}" = "${expected_base_commit}" ] && \
    [ -e package/feeds/base/libnftnl ] && \
@@ -163,6 +180,31 @@ base_source="${sdk_dir}/feeds/base"
 [ -d "${base_source}/libs/libnftnl" ] || die "SDK 缺少官方 libnftnl 源码"
 [ -d "${base_source}/network/utils/nftables" ] || die "SDK 缺少官方 nftables 源码"
 [ -d "${base_source}/network/config/firewall4" ] || die "SDK 缺少官方 firewall4 源码"
+
+# ImmortalWrt 的 FullCone libnftnl 补丁会修改 autotools 输入文件，因此官方
+# SDK 必须重新生成构建系统。若官方包已声明 autoreconf，则保持原样；否则只
+# 接受当前唯一且明确的许可证/安装字段锚点，结构变化时立即失败。
+libnftnl_makefile="${base_source}/libs/libnftnl/Makefile"
+[ -f "${libnftnl_makefile}" ] || die "SDK 缺少官方 libnftnl Makefile"
+if grep -Fxq 'PKG_FIXUP:=autoreconf' "${libnftnl_makefile}"; then
+    [ "$(grep -Fxc 'PKG_FIXUP:=autoreconf' "${libnftnl_makefile}")" -eq 1 ] || \
+        die "官方 libnftnl Makefile 中 PKG_FIXUP:=autoreconf 出现多次"
+else
+    python3 - "${libnftnl_makefile}" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+anchor = "PKG_LICENSE_FILES:=COPYING\n\nPKG_INSTALL:=1\n"
+replacement = "PKG_LICENSE_FILES:=COPYING\n\nPKG_FIXUP:=autoreconf\nPKG_INSTALL:=1\n"
+if text.count(anchor) != 1:
+    raise SystemExit("官方 libnftnl Makefile autoreconf 注入锚点与预期不符")
+path.write_text(text.replace(anchor, replacement))
+PY
+fi
+grep -Fxq 'PKG_FIXUP:=autoreconf' "${libnftnl_makefile}" || \
+    die "官方 libnftnl Makefile 未成功启用 autoreconf"
 
 echo "==> 注入从 ImmortalWrt HEAD 提取的 FullCone 补丁..."
 install -d \
