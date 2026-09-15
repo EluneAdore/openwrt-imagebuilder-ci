@@ -16,7 +16,7 @@
   - 全套 LuCI 简体中文界面，默认启用现代化 `footstrap` 侧边栏主题；
   - SQM CAKE 智能抗缓冲膨胀流控调度；
   - 浏览器免客户端网页终端 `ttyd`；
-  - 使用完全同版 OpenWrt SDK 编译并集成 LEDE nftables FullCone NAT 完整调用链；
+  - 从 ImmortalWrt HEAD 提取 nftables FullCone NAT 源码与补丁，并在完全同版 OpenWrt SDK 中重新编译完整调用链；
   - 按 fw876/helloworld 官方 CI 流程源码编译 SSR Plus、Xray 与 Mihomo，并集成简体中文界面；
   - 预设国内权威 NTP 授时服务池（阿里云、腾讯云、国家授时中心）。
 - **自动化与差分报告**：
@@ -40,7 +40,10 @@
 │   ├── build-helloworld.sh       # 使用同版 OpenWrt SDK 源码编译 SSR Plus APK
 │   ├── build-fullcone.sh         # 使用同版 OpenWrt SDK 编译 nftables FullCone APK
 │   ├── diff_manifest.py          # 软件包清单差分比对工具
+│   ├── find-nftables-build-roots.py # 定位唯一的 nftables prepared source root
+│   ├── validate-fullcone-dag.py  # 验证 firewall4 目标的传递依赖闭包
 │   └── setup-env.sh              # 本地编译依赖检测与自动安装
+├── tests/                        # FullCone DAG、build tree 与 rootfs validator 测试
 ├── Makefile                      # 常用构建命令快捷入口
 └── README.md
 ```
@@ -72,12 +75,15 @@ OPENWRT_VERSION=25.12.5 make build     # 指定特定版本进行构建
 
 首次构建需要下载 SDK，并编译 `luci-app-ssr-plus`、`xray-core`、`mihomo` 及必要依赖，耗时会明显长于单独使用 ImageBuilder；后续构建会复用 `.work/downloads` 下载缓存。SDK 不会预下载 `naiveproxy` 的上游源码，它也不参与编译或固件打包。
 
+本项目日常开发可在 WSL2/Linux 上先完成本地验证，再由 GitHub Actions 的干净环境做最终兼容性验收。不要将其他发行版预编译的内核模块或 APK 放入官方 OpenWrt ImageBuilder，也不要使用 `--force-depends` 绕过内核 ABI。
+
 ### 3. 构建产物说明 (`bin/`)
 - `openwrt-*-x86-64-generic-squashfs-combined-efi-YYYYMMDD-HHMM.img.gz`：UEFI 引导固件压缩包
 - `sha256sums`：SHA256 校验和文件
 - `*.manifest`：固件集成软件包完整清单
 - `manifest.diff` / `manifest.md`：软件包版本变动差异对比报告
 - `helloworld-build-info.txt`：本次 SDK、helloworld 源码提交与编译目标记录
+- `fullcone-build-info.txt`：本次 SDK、ImmortalWrt donor、nft-fullcone 上游提交、APK 版本与内核依赖记录
 
 ---
 
@@ -91,6 +97,7 @@ OPENWRT_VERSION=25.12.5 make build     # 指定特定版本进行构建
 | **管理账号** | `root` |
 | **初始密码** | 无密码（首次登录后请在 Web 界面或终端立即设置密码） |
 | **IPv6 策略** | 默认关闭 WebUI 中的 WAN6、自启、地址/前缀请求、前缀委派、RA、DHCPv6、NDP 和 AAAA 应答；保留 IPv6 协议栈、软件包、防火墙规则及附属恢复参数，可在 WebUI 恢复 |
+| **FullCone NAT** | 默认启用 IPv4 FullCone，IPv6 FullCone 保持关闭；可通过 UCI/LuCI 防火墙配置调整 |
 | **SSH 安全机制** | Dropbear 仅绑定 LAN 口监听并默认禁用密码登录，仅允许公钥免密认证 |
 
 恢复 IPv6 时，可在 WebUI 依次重新启用 WAN 的 IPv6 获取、WAN6 接口及地址/前缀请求、LAN 的 IPv6 设备开关与前缀委派，并按需开启 RA、DHCPv6、SLAAC；最后在 DHCP/DNS 页面关闭“过滤 IPv6 AAAA 记录”。
@@ -107,8 +114,81 @@ OPENWRT_VERSION=25.12.5 make build     # 指定特定版本进行构建
 
 - **增减软件包**：编辑 [`config/extra-packages.txt`](config/extra-packages.txt)，每行一个软件包名称，支持使用 `#` 撰写中文注释（构建脚本会自动剥离注释与空行）。
 - **SSR Plus 源码构建**：[`scripts/build-helloworld.sh`](scripts/build-helloworld.sh) 移植自 [fw876/helloworld 官方 APK CI](https://github.com/fw876/helloworld/blob/dev/.github/workflows/release-packages.yml)。它动态下载与固件完全同版的官方 SDK，校验 SHA-256，使用 SDK 固定的官方 feeds，再编译官方列表中的 `luci-app-ssr-plus`、`xray-core`、`mihomo`；项目按需求排除了 `naiveproxy`。
-- **FullCone NAT**：[`scripts/build-fullcone.sh`](scripts/build-fullcone.sh) 动态跟随 ImmortalWrt HEAD，使用完全同版 SDK 编译 `kmod-nft-fullcone` 以及配套的 libnftnl、nftables、firewall4 APK，严格保证内核 ABI 同版本一致性。
-- **依赖与来源校验**：编译产生的 helloworld 依赖 APK 会组成临时本地仓库；三个目标包和简体中文包通过 `@helloworld` 标签锁定到本次源码产物，实际版本会写入构建记录。构建结束后会检查 Manifest，缺少任一目标或出现 `naiveproxy` 都会使构建失败。
+- **FullCone NAT**：[`scripts/build-fullcone.sh`](scripts/build-fullcone.sh) 动态跟随 ImmortalWrt HEAD，只提取 `fullconenat-nft` package 以及 libnftnl、nftables、firewall4 的 FullCone 补丁。所有组件都在与 ImageBuilder 完全相同版本、target、subtarget、architecture 和 kernel ABI 的官方 OpenWrt SDK 中重新编译。
+- **依赖与来源校验**：编译产生的 helloworld 与 FullCone APK 会组成签名的临时本地仓库；SSR Plus、Xray、Mihomo、中文包及 FullCone 四件套通过 `@custom` 标签锁定到本次源码产物。构建结束后会检查 Manifest，缺少任一目标、kernel ABI 不一致或出现 `naiveproxy` 都会使构建失败。
 - **管理第三方软件源**：在 [`config/custom-feeds.conf`](config/custom-feeds.conf) 中按行添加 APK 源地址，URL 支持 `${VERSION_SERIES}` 占位符自动匹配当前 OpenWrt 主版本系列。
-- **自定义首次开机行为**：修改 [`files/etc/uci-defaults/99-custom-defaults`](files/etc/uci-defaults/99-custom-defaults)，固件初次启动时会自动执行该脚本中的 UCI 调整命令并完成固化。
+- **自定义首次开机行为**：修改 [`files/etc/uci-defaults/99-custom-defaults`](files/etc/uci-defaults/99-custom-defaults)。该脚本只在固件首次启动时执行，成功后由 OpenWrt 删除，因此之后在 WebUI 中修改 IPv6、FullCone 等配置不会在重启时被重新覆盖。
 - **追加自定义系统文件**：将需要预置的文件直接放入 [`files/`](files/) 目录（映射为路由器系统的根路径 `/`），编译时将自动合并进固件中。
+
+---
+
+## 🔄 FullCone 构建与验证
+
+FullCone 仍以官方 OpenWrt 固件为基底，不使用 ImmortalWrt 的预编译 APK 或内核 ABI。构建路径如下：
+
+```text
+OpenWrt 官方稳定版版本与校验和
+  → 完全同版 x86/64 SDK
+  → ImmortalWrt HEAD FullCone package/patch donor
+  → SDK 内重新编译 libnftnl11、nftables-json、kmod-nft-fullcone、firewall4
+  → @custom 签名本地 APK 仓库
+  → 完全同版 ImageBuilder
+  → Manifest、kernel ABI 与最终 rootfs hard validation
+```
+
+FullCone 四件套通过一次顶层 `package/feeds/base/firewall4/compile` 调度。构建前会读取 SDK 实际生成的 `tmp/.packagedeps`，确认 firewall4 的传递依赖闭包能够到达 nftables、libnftnl、fullconenat-nft 和 `package/kernel/linux/compile`，以便 GNU make 在同一 DAG 中去重共享的内核编译前置任务。
+
+构建采用 fail-fast，依次验证：
+
+1. donor 补丁与注入官方 package 的目标补丁内容一致；
+2. nftables prepared/generated source 包含 FULLCONE token、grammar、lexer、statement、linearize 与 delinearize 路径；
+3. `nftables-json` 中 `/usr/sbin/nft` 是 ELF，且 NEEDED 指向实际 `libnftables.so.*`；
+4. 实际 `libnftables.so.*` 包含 exact `fullcone` parser 证据，`libnftnl.so.*` 包含 FullCone expression；
+5. APK 和最终 rootfs 均包含 `nft_fullcone.ko`、firewall4 运行时探测与 `zone-fullcone.uc`；
+6. 最终 Manifest 包含全部四个 FullCone APK，且 kmod 的精确 kernel dependency 与固件内核一致。
+
+`strings` 检查会先把完整输出写入临时文件再匹配，避免在 `set -o pipefail` 下因 `grep -q` 提前退出而产生 SIGPIPE 假阴性。
+
+固件启动后可执行内置验收工具：
+
+```bash
+# 验证内核 expression、nft parser、fw4 输出和当前 ruleset
+fullcone-check status
+
+# 额外验证 firewall4 重启后仍正常
+fullcone-check restart
+
+# 只验证 nft 与 fw4 生成规则的语法，不要求当前 ruleset 已提交
+fullcone-check syntax
+```
+
+也可以手工查看关键证据：
+
+```bash
+lsmod | grep -i fullcone
+nft list ruleset | grep -i fullcone
+fw4 print | grep -i fullcone
+uci get firewall.@defaults[0].fullcone
+```
+
+关闭或重新启用 IPv4 FullCone：
+
+```bash
+uci set firewall.@defaults[0].fullcone='0'  # 改为 1 可重新启用
+uci commit firewall
+/etc/init.d/firewall restart
+fullcone-check status
+```
+
+---
+
+## ✅ 静态验证
+
+修改构建脚本后可运行：
+
+```bash
+bash -n scripts/build.sh scripts/build-fullcone.sh scripts/build-helloworld.sh
+shellcheck scripts/build.sh scripts/build-fullcone.sh scripts/build-helloworld.sh
+python3 -m unittest discover -s tests -v
+git diff --check
+```
