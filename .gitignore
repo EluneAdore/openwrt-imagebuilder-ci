@@ -14,6 +14,7 @@ bin/
 *.img
 *.img.gz
 *.log
+/logs/
 
 # 4. Python 运行时缓存文件
 __pycache__/

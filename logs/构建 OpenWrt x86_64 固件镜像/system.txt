@@ -1,8 +1,0 @@
-2026-09-15T01:30:59.7230000Z Evaluating build.if
-2026-09-15T01:30:59.7230000Z Evaluating: success()
-2026-09-15T01:30:59.7230000Z Result: true
-2026-09-15T01:30:59.7300000Z Job is waiting for a hosted runner to come online.
-2026-09-15T01:30:59.7300000Z Job is about to start running on the hosted runner: GitHub Actions 1000000131
-2026-09-15T01:30:59.7260000Z Requested labels: ubuntu-latest
-2026-09-15T01:30:59.7260000Z Job defined at: EluneAdore/openwrt-imagebuilder-ci/.github/workflows/build.yml@refs/heads/main
-2026-09-15T01:30:59.7260000Z Waiting for a runner to pick up this job...
