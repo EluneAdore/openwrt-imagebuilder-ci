@@ -36,7 +36,7 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || die "缺少构建命令: $1（请先运行 scripts/setup-env.sh）"
 }
 
-for command_name in curl git make patch python3 sha256sum strings tar; do
+for command_name in cmp curl file git make patch python3 readelf sha256sum strings tar; do
     require_command "${command_name}"
 done
 
@@ -215,6 +215,9 @@ cp -f "${immortalwrt_libnftnl_patch}" \
     "${base_source}/libs/libnftnl/patches/"
 cp -f "${immortalwrt_nftables_patch}" \
     "${base_source}/network/utils/nftables/patches/"
+nftables_patch_target="${base_source}/network/utils/nftables/patches/$(basename "${immortalwrt_nftables_patch}")"
+cmp -s "${immortalwrt_nftables_patch}" "${nftables_patch_target}" || \
+    die "官方 nftables package 中的 FullCone 补丁与 ImmortalWrt donor 不一致"
 
 # ImmortalWrt 的补丁同时修改发行版默认 firewall 配置。这里只提取 FullCone
 # 调用链，默认开关继续由本项目的 99-custom-defaults 管理。
@@ -280,21 +283,91 @@ for symbol in \
     grep -Eq "^${symbol}=[ym]$" .config || die "make defconfig 未保留 ${symbol}"
 done
 
-compile_package() {
-    local package_target="$1"
-    echo "  + 编译 ${package_target}"
-    make "${package_target}/clean" DL_DIR="${DOWNLOAD_DIR}"
-    if ! make "${package_target}/compile" -j"${JOBS}" DL_DIR="${DOWNLOAD_DIR}"; then
-        echo "  ! ${package_target} 并行编译失败，使用 -j1 V=s 重试" >&2
-        make "${package_target}/compile" -j1 V=s DL_DIR="${DOWNLOAD_DIR}"
-    fi
+# 确认 OpenWrt 实际生成的 package DAG 能从单一 firewall4 目标覆盖四件套，
+# 并且 nftables 与 FullCone 内核模块共享同一个 linux/compile 前置目标。
+python3 - "${sdk_dir}/tmp/.packagedeps" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit("SDK 未生成 tmp/.packagedeps")
+
+dependencies = {}
+for line in path.read_text().splitlines():
+    if "/compile +=" not in line:
+        continue
+    target, prerequisites = line.split(" +=", 1)
+    dependencies[target] = set(prerequisites.split())
+
+firewall4 = "$(curdir)/feeds/base/firewall4/compile"
+nftables = "$(curdir)/feeds/base/nftables/compile"
+libnftnl = "$(curdir)/feeds/base/libnftnl/compile"
+fullcone = "$(curdir)/fullcone/fullconenat-nft/compile"
+linux = "$(curdir)/feeds/base/linux/compile"
+
+required_edges = (
+    (firewall4, nftables),
+    (firewall4, fullcone),
+    (nftables, libnftnl),
+    (nftables, linux),
+    (fullcone, linux),
+)
+for target, prerequisite in required_edges:
+    if prerequisite not in dependencies.get(target, set()):
+        raise SystemExit(
+            f"FullCone package DAG 缺少依赖边: {target} -> {prerequisite}"
+        )
+PY
+
+readonly -a fullcone_clean_targets=(
+    package/feeds/base/libnftnl/clean
+    package/fullcone/fullconenat-nft/clean
+    package/feeds/base/nftables/clean
+    package/feeds/base/firewall4/clean
+)
+
+echo "==> 清理 FullCone 四件套的旧构建产物..."
+make "${fullcone_clean_targets[@]}" DL_DIR="${DOWNLOAD_DIR}"
+
+# firewall4 依赖 nftables-json，nftables-json 依赖 libnftnl；上面注入的
+# kmod-nft-fullcone 依赖则把内核模块纳入同一个 DAG。使用一次顶层 make，
+# 让 GNU make 对共享的 package/kernel/linux/compile 前置目标统一去重。
+echo "==> 在单一依赖图中编译 patched libnftnl、nftables、nft_fullcone 与 firewall4..."
+if ! make -j"${JOBS}" package/feeds/base/firewall4/compile DL_DIR="${DOWNLOAD_DIR}"; then
+    die "FullCone 依赖图编译失败；请使用 -j1 V=s 手动重跑以获取详细诊断"
+fi
+
+nftables_build_dirs=()
+while IFS= read -r build_dir; do
+    nftables_build_dirs+=("${build_dir}")
+done < <(find "${sdk_dir}/build_dir" -type d \
+    -path '*/nftables-json/nftables-*' -print)
+[ ${#nftables_build_dirs[@]} -eq 1 ] || \
+    die "nftables-json build tree 数量异常: ${#nftables_build_dirs[@]}"
+nftables_build_dir="${nftables_build_dirs[0]}"
+
+require_fullcone_source() {
+    local relative_path="$1"
+    local evidence="$2"
+    local description="$3"
+    local source_file="${nftables_build_dir}/${relative_path}"
+
+    [ -f "${source_file}" ] || die "nftables build tree 缺少 ${relative_path}"
+    grep -Fq "${evidence}" "${source_file}" || \
+        die "nftables build tree 的 ${relative_path} 缺少 ${description}"
 }
 
-echo "==> 编译 patched libnftnl、nftables、nft_fullcone 与 firewall4..."
-compile_package package/feeds/base/libnftnl
-compile_package package/fullcone/fullconenat-nft
-compile_package package/feeds/base/nftables
-compile_package package/feeds/base/firewall4
+echo "==> 验证 nftables prepared/generated FullCone 源码..."
+require_fullcone_source src/parser_bison.y '%token FULLCONE' 'FULLCONE token'
+require_fullcone_source src/parser_bison.y 'fullcone_stmt' 'FullCone grammar'
+require_fullcone_source src/scanner.l 'return FULLCONE;' 'FullCone lexer'
+require_fullcone_source src/statement.c 'NFT_NAT_FULLCONE' 'FullCone statement'
+require_fullcone_source src/netlink_linearize.c 'case NFT_NAT_FULLCONE:' 'FullCone linearize 处理'
+require_fullcone_source src/netlink_delinearize.c 'netlink_parse_fullcone' 'FullCone delinearize 处理'
+require_fullcone_source src/parser_bison.c 'YYSYMBOL_FULLCONE' '生成后的 FullCone parser token'
+require_fullcone_source src/parser_bison.c 'NFT_NAT_FULLCONE' '生成后的 FullCone grammar'
+require_fullcone_source src/scanner.c 'return FULLCONE;' '生成后的 FullCone scanner'
 
 apk_tool="${sdk_dir}/staging_dir/host/bin/apk"
 [ -x "${apk_tool}" ] || die "SDK 内缺少 apk 工具"
@@ -351,11 +424,54 @@ libnftnl_apk="$(find "${OUTPUT_DIR}" -maxdepth 1 -type f -name 'libnftnl11-*.apk
     "${firewall4_apk}" >/dev/null
 "${apk_tool}" --allow-untrusted extract --destination "${extract_dir}" \
     "${libnftnl_apk}" >/dev/null
-strings "${extract_dir}/usr/sbin/nft" | grep -Fxq fullcone || \
-    die "nftables-json APK 不包含 fullcone parser"
+nft_binary="${extract_dir}/usr/sbin/nft"
+[ -f "${nft_binary}" ] || die "nftables-json APK 缺少 usr/sbin/nft"
+nft_file_type="$(file -b "${nft_binary}")"
+case "${nft_file_type}" in
+    *ELF*) ;;
+    *) die "nftables-json APK 中的 usr/sbin/nft 不是 ELF: ${nft_file_type}" ;;
+esac
+
+nft_dynamic_info="${extract_dir}/nft.readelf-dynamic.txt"
+readelf -d "${nft_binary}" > "${nft_dynamic_info}"
+grep -Eq 'Shared library: \[libnftables\.so\.[^]]+\]' "${nft_dynamic_info}" || \
+    die "usr/sbin/nft 未链接 APK 内承载 parser 的 libnftables.so"
+
+libnftables_files=()
+while IFS= read -r library_file; do
+    libnftables_files+=("${library_file}")
+done < <(find "${extract_dir}/usr/lib" -type f -name 'libnftables.so.*' -print)
+[ ${#libnftables_files[@]} -eq 1 ] || \
+    die "nftables-json APK 中实际 libnftables.so 文件数量异常: ${#libnftables_files[@]}"
+libnftables_file="${libnftables_files[0]}"
+
+# nft 是动态链接前端，parser 位于同一 APK 的 libnftables.so。仍输出 nft
+# 自身的字符串诊断，但只以实际承载 parser 的共享库作为二进制硬证据。
+nft_strings_file="${extract_dir}/nft.strings.txt"
+strings "${nft_binary}" > "${nft_strings_file}"
+if grep -Fi 'fullcone' "${nft_strings_file}" >/dev/null; then
+    echo "==> usr/sbin/nft FullCone 字符串诊断:"
+    grep -Fi -C2 'fullcone' "${nft_strings_file}" >&2
+else
+    echo "==> usr/sbin/nft FullCone 字符串诊断: 无（parser 位于 libnftables.so）"
+fi
+
+libnftables_strings_file="${extract_dir}/libnftables.strings.txt"
+strings "${libnftables_file}" > "${libnftables_strings_file}"
+if ! grep -Fx 'fullcone' "${libnftables_strings_file}" >/dev/null; then
+    echo "==> libnftables.so FullCone 字符串诊断:" >&2
+    if grep -Fi -C2 'fullcone' "${libnftables_strings_file}" >&2; then
+        :
+    else
+        echo "  （无 FullCone 相关字符串）" >&2
+    fi
+    die "nftables-json APK 的 libnftables.so 不包含 exact fullcone parser 证据"
+fi
 libnftnl_file="$(find "${extract_dir}/usr/lib" -type f -name 'libnftnl.so.*' -print -quit)"
 [ -n "${libnftnl_file}" ] || die "libnftnl11 APK 缺少共享库"
-strings "${libnftnl_file}" | grep -Fxq fullcone || \
+libnftnl_strings_file="${extract_dir}/libnftnl.strings.txt"
+strings "${libnftnl_file}" > "${libnftnl_strings_file}"
+grep -Fx 'fullcone' "${libnftnl_strings_file}" >/dev/null || \
     die "libnftnl11 APK 不包含 fullcone expression"
 grep -Fq 'nft_try_fullcone' "${extract_dir}/usr/share/ucode/fw4.uc" || \
     die "firewall4 APK 不包含 FullCone 运行时探测"
