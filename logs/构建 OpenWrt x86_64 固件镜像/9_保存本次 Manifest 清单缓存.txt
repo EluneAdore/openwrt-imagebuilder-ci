@@ -1,0 +1,10 @@
+﻿2026-09-15T02:12:17.3791342Z ##[group]Run actions/cache/save@v5
+2026-09-15T02:12:17.3791627Z with:
+2026-09-15T02:12:17.3791840Z   path: /tmp/manifest_cache
+2026-09-15T02:12:17.3792093Z   key: manifest-cache-x86_64-34917571806
+2026-09-15T02:12:17.3792383Z   enableCrossOsArchive: false
+2026-09-15T02:12:17.3792628Z env:
+2026-09-15T02:12:17.3792810Z   OPENWRT_VERSION: 25.12.5
+2026-09-15T02:12:17.3793046Z   BUILD_DATE: 20260915-0131
+2026-09-15T02:12:17.3793270Z ##[endgroup]
+2026-09-15T02:12:17.6323799Z [warning]Path Validation Error: Path(s) specified in the action for caching do(es) not exist, hence no cache is being saved.

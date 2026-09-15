@@ -148,6 +148,7 @@ OPENWRT_VERSION="${OPENWRT_VERSION}" \
 WORK_DIR="${WORK_DIR}" \
 OUTPUT_DIR="${HELLOWORLD_OUTPUT_DIR}" \
 ARCH="${ARCH}" \
+GO_FEED_BRANCH="${GO_FEED_BRANCH:-master}" \
 "${SCRIPT_DIR}/build-helloworld.sh"
 
 # 4. 使用同一个官方 SDK 编译 LEDE nftables FullCone 调用链

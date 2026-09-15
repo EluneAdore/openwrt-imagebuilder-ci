@@ -13,6 +13,7 @@ SDK_ARCH="${SDK_ARCH:-x86_64}"
 TARGET_PATH="${TARGET_PATH:-x86/64}"
 HELLOWORLD_REPOSITORY="${HELLOWORLD_REPOSITORY:-https://github.com/fw876/helloworld.git}"
 HELLOWORLD_REF="${HELLOWORLD_REF:-dev}"
+GO_FEED_BRANCH="${GO_FEED_BRANCH:-master}"
 JOBS="${JOBS:-$(nproc)}"
 
 readonly TARGET_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${TARGET_PATH}"
@@ -103,6 +104,19 @@ echo "==> 初始化 SDK feeds..."
 cp -f feeds.conf.default feeds.conf
 printf 'src-link helloworld %s\n' "${SOURCE_DIR}" >> feeds.conf
 ./scripts/feeds update -a
+
+# 检查 packages feed 的 Go 语言版本是否满足 helloworld 依赖 (例如 xray-core 要求 go >= 1.27)。
+# 当 packages feed 内的 Golang 版本低于 1.27 时，同步上游 release-packages.yml 机制，
+# 从 packages 官方仓库拉取最新的 lang/golang 定义以满足编译要求。
+if [ -n "${GO_FEED_BRANCH:-}" ] && [ ! -d "feeds/packages/lang/golang/golang1.27" ]; then
+    echo "==> 检测到当前 packages feed 缺少 golang1.27，正在同步 ${GO_FEED_BRANCH} 分支的 lang/golang..."
+    if ! git -C feeds/packages fetch --depth=1 origin "${GO_FEED_BRANCH}"; then
+        echo "⚠️ 从 origin 拉取失败，尝试从 GitHub 镜像拉取..."
+        git -C feeds/packages fetch --depth=1 https://github.com/openwrt/packages.git "${GO_FEED_BRANCH}"
+    fi
+    rm -rf feeds/packages/lang/golang
+    git -C feeds/packages checkout FETCH_HEAD -- lang/golang
+fi
 
 # 上游 CI 明确移除官方 packages feed 中的 xray-core，确保使用 helloworld 版本。
 rm -rf feeds/packages/net/xray-core
@@ -235,7 +249,9 @@ SDK SHA-256: ${expected_sha256}
 helloworld repository: ${HELLOWORLD_REPOSITORY}
 helloworld ref: ${HELLOWORLD_REF}
 helloworld commit: ${helloworld_commit}
+Go feed branch: ${GO_FEED_BRANCH:-none}
 Compiled targets: ${BUILD_PACKAGES[*]}
+
 Excluded target: naiveproxy
 Repository APK count: ${#package_files[@]}
 Installed target versions:
