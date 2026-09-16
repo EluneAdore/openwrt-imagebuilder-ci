@@ -116,6 +116,21 @@ jobs:
           restore-keys: |
             openwrt-sdk-fullcone-x86_64-${{ steps.meta.outputs.version }}-
 
+      - name: 准备官方 SDK 环境并校验 Checksum
+        if: steps.meta.outputs.should_build == 'true'
+        id: sdk_setup
+        env:
+          CUSTOM_SIGNING_KEY: ${{ secrets.CUSTOM_SIGNING_KEY }}
+        run: |
+          mkdir -p .work
+          sdk_dir="$(./scripts/setup-sdk.sh "${OPENWRT_VERSION}" ".work")"
+          [ -d "${sdk_dir}" ] && [ -f "${sdk_dir}/Makefile" ] || {
+            echo "❌ 错误: SDK 准备失败，未找到有效 Makefile: ${sdk_dir}" >&2
+            exit 1
+          }
+          echo "sdk_dir=${sdk_dir}" >> $GITHUB_OUTPUT
+          echo "SDK_DIR=${sdk_dir}" >> $GITHUB_ENV
+
       - name: 编译 FullCone 组件 (Runtime + LuCI)
         if: steps.meta.outputs.should_build == 'true'
         id: build_step
@@ -131,15 +146,14 @@ jobs:
           OPENWRT_VERSION="${OPENWRT_VERSION}" \
           WORK_DIR=".work" \
           OUTPUT_DIR="${RUNTIME_OUTPUT_DIR}" \
+          SDK_DIR="${SDK_DIR}" \
           ./components/fullcone-builder/build.sh
-
-          sdk_dir="$(find .work -maxdepth 1 -type d -name "openwrt-sdk-${OPENWRT_VERSION}-x86-64_*.Linux-x86_64" | head -n 1)"
 
           echo "==> 编译 FullCone LuCI APK..."
           OPENWRT_VERSION="${OPENWRT_VERSION}" \
           WORK_DIR=".work" \
           OUTPUT_DIR="${LUCI_OUTPUT_DIR}" \
-          SDK_DIR="${sdk_dir}" \
+          SDK_DIR="${SDK_DIR}" \
           ./components/fullcone-builder/build-luci.sh
 
           echo "==> 合并 FullCone 产物目录..."
@@ -149,6 +163,13 @@ jobs:
           if [ -f "${LUCI_OUTPUT_DIR}/luci-fullcone-public-key.pem" ]; then
             cp -a "${LUCI_OUTPUT_DIR}/luci-fullcone-public-key.pem" "${MERGED_OUTPUT_DIR}/"
           fi
+          cp -a "${RUNTIME_OUTPUT_DIR}/kernel-dependency.txt" "${MERGED_OUTPUT_DIR}/"
+
+          cmp -s "${RUNTIME_OUTPUT_DIR}/fullcone-public-key.pem" \
+            "${LUCI_OUTPUT_DIR}/luci-fullcone-public-key.pem" || {
+            echo "❌ 错误: FullCone runtime 与 LuCI APK 签名公钥不一致" >&2
+            exit 1
+          }
 
           cat "${RUNTIME_OUTPUT_DIR}/repository-packages.txt" "${LUCI_OUTPUT_DIR}/repository-packages.txt" | sort -u > "${MERGED_OUTPUT_DIR}/repository-packages.txt"
           cat "${RUNTIME_OUTPUT_DIR}/install-packages.txt" "${LUCI_OUTPUT_DIR}/install-packages.txt" > "${MERGED_OUTPUT_DIR}/install-packages.txt"
@@ -160,28 +181,79 @@ jobs:
           )
 
           # 生成合并后的 BUILD-INFO.txt
-          cat > "${MERGED_OUTPUT_DIR}/BUILD-INFO.txt" <<EOF
-OpenWrt version: ${OPENWRT_VERSION}
-Component interface: 1
-Target: x86
-Subtarget: 64
-Architecture: x86_64
-ImmortalWrt donor commit: $(awk -F': ' '$1 ~ /ImmortalWrt (donor|source) commit/ {print $2; exit}' "${RUNTIME_OUTPUT_DIR}/BUILD-INFO.txt")
-ImmortalWrt donor path: package/network/utils/fullconenat-nft
-nft-fullcone source commit: $(awk -F': ' '$1 ~ /nft-fullcone source commit/ {print $2; exit}' "${RUNTIME_OUTPUT_DIR}/BUILD-INFO.txt")
-nft-fullcone mirror hash: $(awk -F': ' '$1 ~ /nft-fullcone mirror hash/ {print $2; exit}' "${RUNTIME_OUTPUT_DIR}/BUILD-INFO.txt")
-Kernel dependency: $(awk -F': ' '$1 ~ /Kernel dependency/ {print $2; exit}' "${RUNTIME_OUTPUT_DIR}/BUILD-INFO.txt")
-LuCI repository: $(awk -F': ' '$1 ~ /LuCI repository/ {print $2; exit}' "${LUCI_OUTPUT_DIR}/BUILD-INFO.txt")
-LuCI ref: $(awk -F': ' '$1 ~ /LuCI ref/ {print $2; exit}' "${LUCI_OUTPUT_DIR}/BUILD-INFO.txt")
-LuCI commit SHA: $(awk -F': ' '$1 ~ /LuCI commit SHA/ {print $2; exit}' "${LUCI_OUTPUT_DIR}/BUILD-INFO.txt")
-Repository packages:
-EOF
+          {
+            echo "OpenWrt version: ${OPENWRT_VERSION}"
+            echo "Component interface: 1"
+            echo "Target: x86"
+            echo "Subtarget: 64"
+            echo "Architecture: x86_64"
+            echo "ImmortalWrt donor commit: $(awk -F': ' '$1 ~ /ImmortalWrt (donor|source) commit/ {print $2; exit}' "${RUNTIME_OUTPUT_DIR}/BUILD-INFO.txt")"
+            echo "ImmortalWrt donor path: package/network/utils/fullconenat-nft"
+            echo "nft-fullcone source commit: $(awk -F': ' '$1 ~ /nft-fullcone source commit/ {print $2; exit}' "${RUNTIME_OUTPUT_DIR}/BUILD-INFO.txt")"
+            echo "nft-fullcone mirror hash: $(awk -F': ' '$1 ~ /nft-fullcone mirror hash/ {print $2; exit}' "${RUNTIME_OUTPUT_DIR}/BUILD-INFO.txt")"
+            echo "Kernel dependency: $(awk -F': ' '$1 ~ /Kernel dependency/ {print $2; exit}' "${RUNTIME_OUTPUT_DIR}/BUILD-INFO.txt")"
+            echo "LuCI repository: $(awk -F': ' '$1 ~ /LuCI repository/ {print $2; exit}' "${LUCI_OUTPUT_DIR}/BUILD-INFO.txt")"
+            echo "LuCI ref: $(awk -F': ' '$1 ~ /LuCI ref/ {print $2; exit}' "${LUCI_OUTPUT_DIR}/BUILD-INFO.txt")"
+            echo "LuCI commit SHA: $(awk -F': ' '$1 ~ /LuCI commit SHA/ {print $2; exit}' "${LUCI_OUTPUT_DIR}/BUILD-INFO.txt")"
+            echo "Repository packages:"
+          } > "${MERGED_OUTPUT_DIR}/BUILD-INFO.txt"
           sed 's/^/  /' "${MERGED_OUTPUT_DIR}/repository-packages.txt" >> "${MERGED_OUTPUT_DIR}/BUILD-INFO.txt"
 
-          COMPONENT_ARCHIVE="openwrt-component-fullcone-${OPENWRT_VERSION}-x86_64.tar.gz"
-          tar -czf "${COMPONENT_ARCHIVE}" -C "${MERGED_OUTPUT_DIR}" .
-          echo "archive_path=${COMPONENT_ARCHIVE}" >> $GITHUB_OUTPUT
           echo "output_dir=${MERGED_OUTPUT_DIR}" >> $GITHUB_OUTPUT
+
+      - name: 验证 FullCone 组件产物与元数据 (Hard Validation)
+        if: steps.meta.outputs.should_build == 'true'
+        run: |
+          output_dir="${{ steps.build_step.outputs.output_dir }}"
+          echo "==> 验证 FullCone 构建目录: ${output_dir}"
+
+          # 1. 验证 4 个运行时 APK + 3 个 LuCI APK 是否齐全
+          required_apks=(
+            "kmod-nft-fullcone"
+            "libnftnl11"
+            "nftables-json"
+            "firewall4"
+            "luci-base"
+            "luci-app-firewall"
+            "luci-i18n-firewall-zh-cn"
+          )
+          for pkg in "${required_apks[@]}"; do
+            ls "${output_dir}/${pkg}"-*.apk >/dev/null 2>&1 || {
+              echo "❌ 错误: 缺少必需 FullCone APK: ${pkg}" >&2
+              exit 1
+            }
+          done
+
+          # 2. 严格校验 SHA256 校验和 (覆盖全部 7 个 APK)
+          (cd "${output_dir}" && sha256sum --check --strict SHA256SUMS) || {
+            echo "❌ 错误: FullCone SHA256 校验失败" >&2
+            exit 1
+          }
+
+          # 3. 验证元数据、签名公钥与内核依赖文件
+          for meta_file in BUILD-INFO.txt repository-packages.txt install-packages.txt install-constraints.txt kernel-dependency.txt fullcone-public-key.pem; do
+            [ -s "${output_dir}/${meta_file}" ] || {
+              echo "❌ 错误: 缺少元数据文件或文件为空: ${meta_file}" >&2
+              exit 1
+            }
+          done
+
+          # 4. 验证 kernel-dependency.txt 格式与内容
+          grep -Eq '^kernel=[0-9]+\.[0-9]+\.[0-9]+~[0-9a-f]+-r[0-9]+$' "${output_dir}/kernel-dependency.txt" || {
+            echo "❌ 错误: kernel-dependency.txt 格式无效: $(cat "${output_dir}/kernel-dependency.txt")" >&2
+            exit 1
+          }
+
+          echo "✓ FullCone 组件全部 7 个 APK 及 Hard Validation 校验通过。"
+
+      - name: 打包预编译组件产物
+        if: steps.meta.outputs.should_build == 'true'
+        id: package_step
+        run: |
+          output_dir="${{ steps.build_step.outputs.output_dir }}"
+          COMPONENT_ARCHIVE="openwrt-component-fullcone-${OPENWRT_VERSION}-x86_64.tar.gz"
+          tar -czf "${COMPONENT_ARCHIVE}" -C "${output_dir}" .
+          echo "archive_path=${COMPONENT_ARCHIVE}" >> $GITHUB_OUTPUT
 
       - name: 上传构建产物至 Actions Artifacts
         if: steps.meta.outputs.should_build == 'true'
@@ -190,7 +262,7 @@ EOF
           name: fullcone-component-${{ steps.meta.outputs.version }}
           path: |
             ${{ steps.build_step.outputs.output_dir }}/*
-            ${{ steps.build_step.outputs.archive_path }}
+            ${{ steps.package_step.outputs.archive_path }}
           retention-days: 30
 
       - name: 发布至 GitHub Releases
@@ -202,13 +274,14 @@ EOF
           draft: false
           prerelease: false
           files: |
-            ${{ steps.build_step.outputs.archive_path }}
+            ${{ steps.package_step.outputs.archive_path }}
             ${{ steps.build_step.outputs.output_dir }}/*.apk
             ${{ steps.build_step.outputs.output_dir }}/SHA256SUMS
             ${{ steps.build_step.outputs.output_dir }}/BUILD-INFO.txt
             ${{ steps.build_step.outputs.output_dir }}/repository-packages.txt
             ${{ steps.build_step.outputs.output_dir }}/install-packages.txt
             ${{ steps.build_step.outputs.output_dir }}/install-constraints.txt
+            ${{ steps.build_step.outputs.output_dir }}/kernel-dependency.txt
             ${{ steps.build_step.outputs.output_dir }}/*.pem
           body: |
             ## OpenWrt ${{ steps.meta.outputs.version }} FullCone 预编译组件

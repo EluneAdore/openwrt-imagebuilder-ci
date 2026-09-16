@@ -136,8 +136,23 @@ class FullConeComponentInterfaceTests(unittest.TestCase):
         self.assertIn("./components/fullcone-builder/build-luci.sh", workflow_content)
         self.assertIn("component-fullcone-", workflow_content)
         self.assertIn("resolve-version.sh", workflow_content)
+        self.assertIn("setup-sdk.sh", workflow_content)
+        self.assertIn('SDK_DIR="${SDK_DIR}"', workflow_content)
+        self.assertIn("CUSTOM_SIGNING_KEY", workflow_content)
+        self.assertIn("sha256sum --check --strict SHA256SUMS", workflow_content)
+        self.assertIn("kernel-dependency.txt", workflow_content)
+        self.assertIn("fullcone-public-key.pem", workflow_content)
+        for pkg in (
+            "kmod-nft-fullcone",
+            "libnftnl11",
+            "nftables-json",
+            "firewall4",
+            "luci-base",
+            "luci-app-firewall",
+            "luci-i18n-firewall-zh-cn",
+        ):
+            self.assertIn(pkg, workflow_content)
 
 
 if __name__ == "__main__":
     unittest.main()
-

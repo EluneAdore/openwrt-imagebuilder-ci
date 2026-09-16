@@ -63,9 +63,38 @@ class HelloworldComponentInterfaceTests(unittest.TestCase):
         self.assertIn("component-helloworld-", workflow_content)
         self.assertIn("resolve-version.sh", workflow_content)
 
+    def test_helloworld_workflow_prepares_sdk_and_validates_outputs(self):
+        workflow_file = ROOT / ".github" / "workflows" / "build-helloworld.yml"
+        self.assertTrue(workflow_file.is_file())
+        workflow_content = workflow_file.read_text()
+        self.assertIn("setup-sdk.sh", workflow_content)
+        self.assertIn('SDK_DIR="${SDK_DIR}"', workflow_content)
+        self.assertIn("sha256sum --check --strict SHA256SUMS", workflow_content)
+        self.assertIn("helloworld-public-key.pem", workflow_content)
+        self.assertIn("CUSTOM_SIGNING_KEY", workflow_content)
+        for pkg in (
+            "luci-app-ssr-plus",
+            "luci-i18n-ssr-plus-zh-cn",
+            "xray-core",
+            "mihomo",
+            "v2ray-geoip",
+            "v2ray-geosite",
+            "shadowsocks-rust",
+        ):
+            self.assertIn(pkg, workflow_content)
+
     def test_component_cleans_wsl_path(self):
         self.assertIn('CLEAN_PATH=""', self.component)
         self.assertIn('export PATH="$CLEAN_PATH"', self.component)
+
+    def test_setup_sdk_script_exists_and_cleans_wsl_path(self):
+        setup_sdk = ROOT / "scripts" / "setup-sdk.sh"
+        self.assertTrue(setup_sdk.is_file())
+        content = setup_sdk.read_text()
+        self.assertIn('CLEAN_PATH=""', content)
+        self.assertIn('OPENWRT_VERSION', content)
+        self.assertIn('sha256sums', content)
+        self.assertIn('CUSTOM_SIGNING_KEY', content)
 
 
 
