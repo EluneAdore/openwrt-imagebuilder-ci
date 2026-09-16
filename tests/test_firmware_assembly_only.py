@@ -73,7 +73,7 @@ class FirmwareAssemblyOnlyTests(unittest.TestCase):
 class FirmwareCIWorkflowAssemblyOnlyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.workflow_path = ROOT / ".github" / "workflows" / "build.yml"
+        cls.workflow_path = ROOT / ".github" / "workflows" / "daily-build.yml"
         cls.workflow_content = cls.workflow_path.read_text(encoding="utf-8")
 
     def test_workflow_exists_and_is_valid_yaml(self):

@@ -1,4 +1,4 @@
-name: 每日自动构建固件流水线
+name: 每日自动构建 OpenWrt 固件
 
 on:
   schedule:
@@ -10,6 +10,19 @@ on:
         description: "OpenWrt 官方发布版本 (输入 latest 自动解析最新稳定版，或指定如 25.12.5)"
         required: true
         default: "latest"
+      rootfs_partsize:
+        description: "根分区大小 ROOTFS_PARTSIZE (MB，默认 2048 即 2GB)"
+        required: true
+        default: "2048"
+      grub_timeout:
+        description: "GRUB 引导倒计时 (秒，默认 0 即开机不等待)"
+        required: false
+        default: "0"
+      publish_release:
+        description: "是否同时发布到 GitHub Releases (默认 true 发布)"
+        required: false
+        type: boolean
+        default: true
 
 concurrency:
   group: daily-openwrt-build
@@ -33,7 +46,7 @@ jobs:
       - name: 解析版本号
         id: resolve
         env:
-          REQUESTED_VERSION: ${{ inputs.openwrt_version || github.event.inputs.openwrt_version || 'latest' }}
+          REQUESTED_VERSION: ${{ github.event.inputs.openwrt_version || 'latest' }}
         run: |
           chmod +x scripts/*.sh
           version="$(./scripts/resolve-version.sh "${REQUESTED_VERSION}")"
@@ -59,15 +72,223 @@ jobs:
     secrets: inherit
 
   firmware:
-    name: 固件纯装配并发布 (Assembly-Only)
+    name: 纯装配 OpenWrt x86_64 固件镜像
     needs:
       - resolve-version
       - helloworld
       - fullcone
-    uses: ./.github/workflows/build.yml
-    with:
-      openwrt_version: ${{ needs.resolve-version.outputs.version }}
-      rootfs_partsize: "2048"
-      publish_release: true
-    secrets: inherit
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: 检出代码仓库
+        uses: actions/checkout@v5
 
+      - name: 初始化装配依赖环境
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            gawk \
+            git \
+            curl \
+            file \
+            tar \
+            zstd \
+            python3
+
+      - name: 锁定 OpenWrt 版本并生成构建时间戳
+        id: version
+        env:
+          OPENWRT_VERSION: ${{ needs.resolve-version.outputs.version }}
+        run: |
+          BUILD_DATE=$(date +"%Y%m%d-%H%M")
+          echo "OPENWRT_VERSION=${OPENWRT_VERSION}" >> $GITHUB_ENV
+          echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_ENV
+          echo "version=${OPENWRT_VERSION}" >> $GITHUB_OUTPUT
+
+      - name: 缓存官方 ImageBuilder 下载
+        uses: actions/cache@v5
+        with:
+          path: .work/*.tar.zst
+          key: openwrt-imagebuilder-${{ steps.version.outputs.version }}-x86_64
+          restore-keys: |
+            openwrt-imagebuilder-${{ steps.version.outputs.version }}-
+
+      - name: 获取预编译组件产物 (Fail-Fast)
+        id: components
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p .work /tmp/component-dl
+
+          download_component() {
+            local tag="$1"
+            local asset="$2"
+            local artifact_name="$3"
+            local dest_dir="$4"
+            local tmp_dir="/tmp/component-dl/${tag}"
+            mkdir -p "${tmp_dir}" "${dest_dir}"
+
+            echo "==> 正在获取预编译组件 [${tag}] (${asset})..."
+            local downloaded="false"
+            if gh release download "${tag}" --pattern "${asset}" --dir "${tmp_dir}" 2>/dev/null; then
+              downloaded="true"
+            elif gh run download --name "${artifact_name}" --dir "${tmp_dir}" 2>/dev/null; then
+              downloaded="true"
+            fi
+
+            if [ "${downloaded}" != "true" ] || [ ! -f "${tmp_dir}/${asset}" ]; then
+              echo "❌ 致命错误: 未找到与 OpenWrt ${OPENWRT_VERSION} 严格匹配的预编译组件产物: ${asset}" >&2
+              echo "❌ 对应 Release 标签: ${tag} 或 Actions Artifact: ${artifact_name}" >&2
+              echo "❌ 固件流水线为纯装配架构，严禁降级混拼旧版本或回退编译。请先成功运行对应组件预编译 CI！" >&2
+              exit 1
+            fi
+
+            tar -xzf "${tmp_dir}/${asset}" -C "${dest_dir}"
+            rm -rf "${tmp_dir}"
+            echo "✓ 成功解压 ${asset} 到 ${dest_dir}"
+          }
+
+          # 1. 获取 helloworld 预编译组件
+          HW_DIR=".work/helloworld-component"
+          rm -rf "${HW_DIR}"
+          download_component \
+            "component-helloworld-${OPENWRT_VERSION}" \
+            "openwrt-component-helloworld-${OPENWRT_VERSION}-x86_64.tar.gz" \
+            "helloworld-component-${OPENWRT_VERSION}" \
+            "${HW_DIR}"
+
+          # 2. 获取 FullCone 预编译组件 (包含 runtime 与 luci 子目录)
+          FC_DIR=".work/fullcone-component"
+          rm -rf "${FC_DIR}"
+          download_component \
+            "component-fullcone-${OPENWRT_VERSION}" \
+            "openwrt-component-fullcone-${OPENWRT_VERSION}-x86_64.tar.gz" \
+            "fullcone-component-${OPENWRT_VERSION}" \
+            "${FC_DIR}"
+
+          [ -d "${FC_DIR}/runtime" ] || {
+            echo "❌ 致命错误: FullCone 组件解压产物中缺少 runtime 目录" >&2
+            exit 1
+          }
+          [ -d "${FC_DIR}/luci" ] || {
+            echo "❌ 致命错误: FullCone 组件解压产物中缺少 luci 目录" >&2
+            exit 1
+          }
+
+          echo "hw_dir=${HW_DIR}" >> $GITHUB_OUTPUT
+          echo "fc_runtime_dir=${FC_DIR}/runtime" >> $GITHUB_OUTPUT
+          echo "fc_luci_dir=${FC_DIR}/luci" >> $GITHUB_OUTPUT
+
+      - name: 恢复历史 Manifest 清单缓存
+        uses: actions/cache/restore@v5
+        with:
+          path: /tmp/manifest_cache
+          key: manifest-cache-x86_64-${{ github.run_id }}
+          restore-keys: |
+            manifest-cache-x86_64-
+
+      - name: 执行固件纯装配打包 (Assembly-Only)
+        env:
+          ROOTFS_PARTSIZE: ${{ github.event.inputs.rootfs_partsize || '2048' }}
+          GRUB_TIMEOUT: ${{ github.event.inputs.grub_timeout || '0' }}
+        run: |
+          chmod +x scripts/*.sh scripts/*.py
+          mkdir -p .work
+          if [ -d /tmp/manifest_cache ] && compgen -G "/tmp/manifest_cache/*.manifest" > /dev/null; then
+            cp -f /tmp/manifest_cache/*.manifest .work/last-manifest.txt 2>/dev/null || true
+          fi
+
+          OPENWRT_VERSION="${OPENWRT_VERSION}" \
+          HELLOWORLD_COMPONENT_DIR="${{ steps.components.outputs.hw_dir }}" \
+          FULLCONE_RUNTIME_DIR="${{ steps.components.outputs.fc_runtime_dir }}" \
+          FULLCONE_LUCI_DIR="${{ steps.components.outputs.fc_luci_dir }}" \
+          WORK_DIR=".work" \
+          BIN_DIR="bin" \
+          ROOTFS_PARTSIZE="${ROOTFS_PARTSIZE}" \
+          GRUB_TIMEOUT="${GRUB_TIMEOUT}" \
+          BUILD_DATE="${BUILD_DATE}" \
+          ./scripts/build-firmware.sh
+
+      - name: 生成 Release 发布元数据与差分报告
+        id: meta
+        run: |
+          # 自动从本次生成的 manifest 文件名中提取实际构建版本
+          MANIFEST_PATH=$(find bin -maxdepth 1 -type f -name '*.manifest' -print -quit)
+          ACTUAL_VERSION=$(basename "$MANIFEST_PATH" | sed -E 's/^openwrt-([0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?)-.*/\1/')
+          if [ -z "$ACTUAL_VERSION" ]; then
+            ACTUAL_VERSION="${{ steps.version.outputs.version }}"
+          fi
+          TAG_NAME="v${ACTUAL_VERSION}-${BUILD_DATE}"
+          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
+          echo "release_title=OpenWrt ${ACTUAL_VERSION} x86_64 (${BUILD_DATE})" >> $GITHUB_OUTPUT
+          echo "actual_version=${ACTUAL_VERSION}" >> $GITHUB_OUTPUT
+
+          # 更新清单缓存供下一次对比
+          mkdir -p /tmp/manifest_cache
+          rm -rf /tmp/manifest_cache/*
+          cp -f bin/*.manifest /tmp/manifest_cache/last.manifest 2>/dev/null || true
+
+          # 读取差分报告注入 Release 内容
+          DIFF_CONTENT=""
+          if [ -f "bin/manifest.md" ]; then
+            DIFF_CONTENT=$(cat bin/manifest.md)
+          fi
+          {
+            echo "diff_content<<EOF"
+            echo "$DIFF_CONTENT"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
+
+      - name: 保存本次 Manifest 清单缓存
+        uses: actions/cache/save@v5
+        if: always()
+        with:
+          path: /tmp/manifest_cache
+          key: manifest-cache-x86_64-${{ github.run_id }}
+
+      - name: 上传构建产物至 Artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: openwrt-x86_64-${{ steps.meta.outputs.tag_name }}
+          path: bin/*
+          retention-days: 30
+
+      - name: 自动发布 GitHub Release
+        if: ${{ github.event_name == 'schedule' || github.event.inputs.publish_release == 'true' || github.event.inputs.publish_release == true }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag_name }}
+          name: ${{ steps.meta.outputs.release_title }}
+          draft: false
+          prerelease: false
+          overwrite_files: true
+          files: |
+            bin/*combined-efi*.img.gz*
+            bin/sha256sums
+            bin/*.manifest
+            bin/manifest.diff
+            bin/manifest.md
+            bin/*build-info.txt
+          body: |
+            ## OpenWrt x86_64 UEFI 自动构建固件发布
+
+            * **OpenWrt 版本**: `${{ steps.meta.outputs.actual_version }}`
+            * **构建时间**: `${{ steps.meta.outputs.tag_name }}`
+            * **适用环境**: FNOS (飞牛 OS) KVM / PVE / ESXi / 实体机 x86_64 (UEFI 引导)
+            * **根分区大小**: `${{ github.event.inputs.rootfs_partsize || '2048' }} MB (2GB)`
+            * **流水线架构**: 纯装配流水线 (Assembly-Only，零组件编译与零 SDK 下载)
+            * **集成特性**:
+              - 🚀 全套 LuCI 简体中文界面，默认启用现代侧边栏主题 (`luci-theme-footstrap`)
+              - 📶 硬件直通网卡驱动: Realtek 2.5G (`r8125-rss`), 万兆 (`r8127-rss`), Wi-Fi 6/6E (`mt7921e`, `mt7922`)
+              - 🖥️ 虚拟化来宾支持: `qemu-ga` (QEMU Guest Agent) 与 `open-vm-tools`
+              - ⚡ 队列流控: SQM (带抗延迟 `CAKE` 算法)
+              - 💻 网页终端: `ttyd`
+              - 🌍 SSR Plus: 预编译组件集成 `luci-app-ssr-plus`、`xray-core`、`mihomo`
+              - 🔄 FullCone NAT: 预编译组件集成 `kmod-nft-fullcone`、`libnftnl11`、`nftables-json`、`firewall4` 及 LuCI 界面
+              - 🕒 权威授时: 阿里云 / 腾讯云 / 国家授时中心 NTP
+              - 🔑 安全加固: SSH 仅限 LAN 口监听并支持免密密钥认证
+
+            ---
+
+            ${{ steps.meta.outputs.diff_content }}

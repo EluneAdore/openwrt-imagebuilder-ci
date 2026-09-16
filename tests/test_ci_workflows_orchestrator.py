@@ -29,7 +29,6 @@ class CIWorkflowsOrchestratorTests(unittest.TestCase):
             "daily-build.yml",
             "build-helloworld.yml",
             "build-fullcone.yml",
-            "build.yml",
         ]
         for name in workflow_files:
             path = WORKFLOWS_DIR / name
@@ -37,6 +36,11 @@ class CIWorkflowsOrchestratorTests(unittest.TestCase):
             with open(path, "r", encoding="utf-8") as fp:
                 data = yaml.load(fp, Loader=UniqueKeyLoader)
             self.assertIsInstance(data, dict)
+
+    def test_build_yml_is_completely_removed(self):
+        # 确认旧 build.yml 已彻底删除，全仓库统一使用 daily-build.yml
+        build_yml = WORKFLOWS_DIR / "build.yml"
+        self.assertFalse(build_yml.exists(), "build.yml 必须已被彻底删除")
 
     def test_schedule_ownership_exclusive_to_daily_build(self):
         # 仅 daily-build.yml 拥有 schedule 定时器
@@ -49,8 +53,8 @@ class CIWorkflowsOrchestratorTests(unittest.TestCase):
         cron_expr = triggers["schedule"][0]["cron"]
         self.assertEqual(cron_expr, "0 2 * * *")
 
-        # 其他三个工作流绝对不得包含 schedule 触发器
-        for name in ("build-helloworld.yml", "build-fullcone.yml", "build.yml"):
+        # 两个组件工作流绝对不得包含 schedule 触发器
+        for name in ("build-helloworld.yml", "build-fullcone.yml"):
             path = WORKFLOWS_DIR / name
             with open(path, "r", encoding="utf-8") as fp:
                 data = yaml.load(fp, Loader=UniqueKeyLoader)
@@ -75,15 +79,6 @@ class CIWorkflowsOrchestratorTests(unittest.TestCase):
         self.assertIn("openwrt_version", fc_triggers["workflow_call"]["inputs"])
         self.assertTrue(fc_triggers["workflow_call"]["inputs"]["openwrt_version"]["required"])
         self.assertIn("force_rebuild", fc_triggers["workflow_call"]["inputs"])
-
-        # build.yml
-        with open(WORKFLOWS_DIR / "build.yml", "r", encoding="utf-8") as fp:
-            fw_data = yaml.load(fp, Loader=UniqueKeyLoader)
-        fw_triggers = fw_data.get("on") or fw_data.get(True)
-        self.assertIn("workflow_call", fw_triggers)
-        self.assertIn("openwrt_version", fw_triggers["workflow_call"]["inputs"])
-        self.assertTrue(fw_triggers["workflow_call"]["inputs"]["openwrt_version"]["required"])
-        self.assertIn("publish_release", fw_triggers["workflow_call"]["inputs"])
 
     def test_daily_build_dag_and_concurrency(self):
         daily_path = WORKFLOWS_DIR / "daily-build.yml"
@@ -121,21 +116,20 @@ class CIWorkflowsOrchestratorTests(unittest.TestCase):
         self.assertEqual(fc_job.get("with", {}).get("openwrt_version"), "${{ needs.resolve-version.outputs.version }}")
         self.assertTrue(fc_job.get("with", {}).get("force_rebuild"))
 
-        # 固件装配 firmware 必须等待 resolve-version, helloworld, fullcone
+        # 固件纯装配 firmware 必须等待 resolve-version, helloworld, fullcone
         fw_job = jobs["firmware"]
         fw_needs = fw_job.get("needs")
         self.assertIsInstance(fw_needs, list)
         self.assertIn("resolve-version", fw_needs)
         self.assertIn("helloworld", fw_needs)
         self.assertIn("fullcone", fw_needs)
-        self.assertEqual(fw_job.get("uses"), "./.github/workflows/build.yml")
-        self.assertEqual(fw_job.get("secrets"), "inherit")
-        self.assertEqual(fw_job.get("with", {}).get("openwrt_version"), "${{ needs.resolve-version.outputs.version }}")
-        self.assertTrue(fw_job.get("with", {}).get("publish_release"))
+        # firmware 是直接在 daily-build.yml 执行的 job，不再使用外部 build.yml
+        self.assertNotIn("uses", fw_job)
+        self.assertEqual(fw_job.get("runs-on"), "ubuntu-latest")
 
     def test_child_workflows_have_no_conflicting_concurrency(self):
-        # 确保三个子工作流没有定义可能取消正在运行任务的 concurrency
-        for name in ("build-helloworld.yml", "build-fullcone.yml", "build.yml"):
+        # 确保两个子工作流没有定义可能取消正在运行任务的 concurrency
+        for name in ("build-helloworld.yml", "build-fullcone.yml"):
             path = WORKFLOWS_DIR / name
             with open(path, "r", encoding="utf-8") as fp:
                 data = yaml.load(fp, Loader=UniqueKeyLoader)
@@ -176,11 +170,34 @@ class CIWorkflowsOrchestratorTests(unittest.TestCase):
             self.assertEqual(rel_step.get("if"), "steps.meta.outputs.should_build == 'true'")
             self.assertTrue(rel_step.get("with", {}).get("overwrite_files"))
 
-    def test_firmware_workflow_avoids_reresolving_concrete_version(self):
-        content = (WORKFLOWS_DIR / "build.yml").read_text(encoding="utf-8")
-        # 确保包含正则判断，避免再次网络解析版本
-        self.assertIn('if [[ "${REQUESTED_OPENWRT_VERSION}" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+(-rc[0-9]+)?$ ]]; then', content)
-        self.assertIn('version="${REQUESTED_OPENWRT_VERSION}"', content)
+    def test_firmware_job_assembly_only_and_single_version_resolution(self):
+        content = (WORKFLOWS_DIR / "daily-build.yml").read_text(encoding="utf-8")
+
+        # 1. 版本单次锁定断言：firmware job 直接继承 resolve-version 输出，不二次网络解析
+        self.assertIn('OPENWRT_VERSION: ${{ needs.resolve-version.outputs.version }}', content)
+
+        # 2. 严禁 SDK 下载或编译
+        for forbidden in ("openwrt-sdk-x86_64", "setup-sdk.sh", "SDK_DIR"):
+            # 在 firmware job 范围检查
+            fw_section = content.split("firmware:")[1]
+            self.assertNotIn(forbidden, fw_section)
+
+        # 3. 严禁组件编译
+        for forbidden in (
+            "./scripts/build.sh",
+            "components/helloworld-builder/build.sh",
+            "components/fullcone-builder/build.sh",
+            "components/fullcone-builder/build-luci.sh",
+        ):
+            self.assertNotIn(forbidden, fw_section)
+
+        # 4. 纯装配调用与产物消费
+        self.assertIn("./scripts/build-firmware.sh", fw_section)
+        self.assertIn("HELLOWORLD_COMPONENT_DIR", fw_section)
+        self.assertIn("FULLCONE_RUNTIME_DIR", fw_section)
+        self.assertIn("FULLCONE_LUCI_DIR", fw_section)
+        self.assertIn("openwrt-component-helloworld-${OPENWRT_VERSION}-x86_64.tar.gz", fw_section)
+        self.assertIn("openwrt-component-fullcone-${OPENWRT_VERSION}-x86_64.tar.gz", fw_section)
 
 
 if __name__ == "__main__":

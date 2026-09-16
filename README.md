@@ -30,8 +30,7 @@
 ```text
 .
 ├── .github/workflows/
-│   ├── daily-build.yml           # 每日自动构建 Orchestrator (统一解析版本/并发预编译/自动装配)
-│   ├── build.yml                 # 固件纯装配流水线 (Assembly-Only，零编译/零SDK)
+│   ├── daily-build.yml           # 每日自动构建 OpenWrt 固件 (主流水线: 解析版本/并发预编译/固件纯装配与发布)
 │   ├── build-helloworld.yml      # helloworld 预编译组件流水线 (Reusable)
 │   └── build-fullcone.yml        # FullCone 预编译组件流水线 (Reusable)
 ├── config/
@@ -58,15 +57,14 @@
 ## 🚀 快速上手
 
 ### 1. 云端构建 (GitHub Actions)
-- **每日自动编排构建**：每天**北京时间上午 10:00**（即 `02:00 UTC`）由总控流水线 (`daily-build.yml`) 触发：
+- **每日自动构建**：每天**北京时间上午 10:00**（即 `02:00 UTC`）由主流水线 (`daily-build.yml`) 自动触发：
   1. 统一解析一次 OpenWrt 官方最新稳定版，锁定单一版本号；
   2. 并行触发 `helloworld` 与 `FullCone` 预编译组件流水线，强制重新编译 (`force_rebuild: true`) 并更新 Release assets；
-  3. 两大组件构建成功后，自动触发 `build.yml` 执行零编译固件纯装配并发布最终固件。
+  3. 两大组件成功生成最新 assets 后，主流水线的 `firmware` job 自动执行零编译固件纯装配并发布最终固件。
 - **纯净提交策略**：代码推送 (Push) 不触发构建，避免不必要的 Actions 额度消耗。
 - **手动触发构建**：
-  - **全链路总控**：在 Actions -> **每日自动构建固件流水线** 中点击 **Run workflow**，一键执行全套版本解析、组件重编与固件装配；
-  - **独立固件纯装配**：在 Actions -> **构建 OpenWrt 固件** 中点击 **Run workflow**（直接使用已发布的组件 Release 进行纯装配，耗时仅约 3 分钟）；
-  - **独立组件预编译**：可在对应的 `helloworld` 或 `FullCone` 组件流水线中单独触发。
+  - **主流水线**：在 Actions -> **每日自动构建 OpenWrt 固件** 中点击 **Run workflow**，一键执行全链路版本解析、组件重编与固件装配发布；
+  - **独立组件预编译**：可在对应的 **构建 helloworld 预编译组件** 或 **构建 FullCone 预编译组件** 流水线中单独手动触发。
 
 ### 2. 本地纯装配构建 (Ubuntu / Debian / WSL2)
 ```bash
