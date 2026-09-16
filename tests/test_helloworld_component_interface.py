@@ -42,11 +42,26 @@ class HelloworldComponentInterfaceTests(unittest.TestCase):
             self.assertIn(package, self.component)
         self.assertIn("Excluded target: naiveproxy", self.component)
 
-    def test_orchestrator_and_compatibility_wrapper_use_component(self):
-        self.assertIn('HELLOWORLD_COMPONENT="${WORKSPACE_ROOT}/components/helloworld-builder/build.sh"', self.orchestrator)
-        self.assertIn('"${HELLOWORLD_COMPONENT}"', self.orchestrator)
-        self.assertIn('components/helloworld-builder', self.wrapper)
-        self.assertIn('exec "${COMPONENT_BUILD}" "$@"', self.wrapper)
+    def test_component_supports_sdk_dir_priority(self):
+        self.assertIn('SDK_DIR="${SDK_DIR:-}"', self.component)
+        self.assertIn('if [ -n "${SDK_DIR}" ] && [ -f "${SDK_DIR}/Makefile" ]; then', self.component)
+        self.assertIn('sdk_dir="${SDK_DIR}"', self.component)
+
+    def test_component_build_info_records_target_metadata(self):
+        for field in (
+            "Target: ${TARGET_PATH%/*}",
+            "Subtarget: ${TARGET_PATH#*/}",
+            "Architecture: ${SDK_ARCH}",
+        ):
+            self.assertIn(field, self.component)
+
+    def test_helloworld_workflow_exists_and_calls_authoritative_component(self):
+        workflow_file = ROOT / ".github" / "workflows" / "build-helloworld.yml"
+        self.assertTrue(workflow_file.is_file())
+        workflow_content = workflow_file.read_text()
+        self.assertIn("./components/helloworld-builder/build.sh", workflow_content)
+        self.assertIn("component-helloworld-", workflow_content)
+        self.assertIn("resolve-version.sh", workflow_content)
 
 
 if __name__ == "__main__":

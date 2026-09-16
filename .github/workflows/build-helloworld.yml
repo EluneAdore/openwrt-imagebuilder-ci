@@ -1,0 +1,156 @@
+name: 构建 helloworld 预编译组件
+
+on:
+  schedule:
+    # 每天北京时间上午 10:00 (UTC 02:00) 自动检查并构建
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: "OpenWrt 官方发布版本 (输入 latest 自动拉取最新稳定版，或指定如 25.12.5)"
+        required: true
+        default: "latest"
+      force_rebuild:
+        description: "是否强制重新编译 (即使已有相同版本产物)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 编译 helloworld 组件 (x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: 检出代码仓库
+        uses: actions/checkout@v5
+
+      - name: 初始化编译依赖环境
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            binutils \
+            clang \
+            flex \
+            bison \
+            bzip2 \
+            g++ \
+            gcc-multilib \
+            g++-multilib \
+            libncurses-dev \
+            zlib1g-dev \
+            gawk \
+            git \
+            gettext \
+            libssl-dev \
+            rsync \
+            unzip \
+            wget \
+            curl \
+            file \
+            patch \
+            tar \
+            zstd \
+            python3
+
+      - name: 解析 OpenWrt 版本与上游最新 Commit
+        id: meta
+        env:
+          REQUESTED_VERSION: ${{ github.event.inputs.openwrt_version || 'latest' }}
+          FORCE_REBUILD: ${{ github.event.inputs.force_rebuild || 'false' }}
+        run: |
+          chmod +x scripts/*.sh
+          version="$(./scripts/resolve-version.sh "${REQUESTED_VERSION}")"
+          echo "OPENWRT_VERSION=${version}" >> $GITHUB_ENV
+          echo "version=${version}" >> $GITHUB_OUTPUT
+
+          # 获取 upstream helloworld HEAD commit
+          upstream_commit="$(git ls-remote https://github.com/fw876/helloworld.git refs/heads/master 2>/dev/null | awk '{print $1}')"
+          echo "upstream_commit=${upstream_commit}" >> $GITHUB_OUTPUT
+
+          # 检查对应 Release 是否已存在且已是该 commit
+          tag_name="component-helloworld-${version}"
+          echo "tag_name=${tag_name}" >> $GITHUB_OUTPUT
+
+          should_build="true"
+          if [ "${FORCE_REBUILD}" != "true" ]; then
+            if gh release view "${tag_name}" --json assets 2>/dev/null | grep -q "openwrt-component-helloworld-${version}-x86_64.tar.gz"; then
+              mkdir -p /tmp/check_rel
+              if gh release download "${tag_name}" --pattern "BUILD-INFO.txt" --dir /tmp/check_rel 2>/dev/null; then
+                existing_commit="$(awk -F': ' '$1 == "helloworld commit" {print $2; exit}' /tmp/check_rel/BUILD-INFO.txt)"
+                if [ -n "${existing_commit}" ] && [ "${existing_commit}" = "${upstream_commit}" ]; then
+                  echo "==> 预编译组件已有且上游 commit (${existing_commit}) 未变化，跳过重新编译。"
+                  should_build="false"
+                fi
+              fi
+            fi
+          fi
+          echo "should_build=${should_build}" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 缓存官方构建工具与源码下载
+        if: steps.meta.outputs.should_build == 'true'
+        uses: actions/cache@v5
+        with:
+          path: |
+            .work/*.tar.zst
+            .work/downloads
+          key: openwrt-sdk-x86_64-${{ steps.meta.outputs.version }}-${{ hashFiles('components/helloworld-builder/**') }}
+          restore-keys: |
+            openwrt-sdk-x86_64-${{ steps.meta.outputs.version }}-
+
+      - name: 编译 helloworld 组件
+        if: steps.meta.outputs.should_build == 'true'
+        id: build_step
+        run: |
+          mkdir -p .work
+          OUTPUT_DIR=".work/helloworld-packages-${OPENWRT_VERSION}"
+          OPENWRT_VERSION="${OPENWRT_VERSION}" \
+          WORK_DIR=".work" \
+          OUTPUT_DIR="${OUTPUT_DIR}" \
+          ./components/helloworld-builder/build.sh
+
+          COMPONENT_ARCHIVE="openwrt-component-helloworld-${OPENWRT_VERSION}-x86_64.tar.gz"
+          tar -czf "${COMPONENT_ARCHIVE}" -C "${OUTPUT_DIR}" .
+          echo "archive_path=${COMPONENT_ARCHIVE}" >> $GITHUB_OUTPUT
+          echo "output_dir=${OUTPUT_DIR}" >> $GITHUB_OUTPUT
+
+      - name: 上传构建产物至 Actions Artifacts
+        if: steps.meta.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: helloworld-component-${{ steps.meta.outputs.version }}
+          path: |
+            ${{ steps.build_step.outputs.output_dir }}/*
+            ${{ steps.build_step.outputs.archive_path }}
+          retention-days: 30
+
+      - name: 发布至 GitHub Releases
+        if: steps.meta.outputs.should_build == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag_name }}
+          name: OpenWrt ${{ steps.meta.outputs.version }} Prebuilt Component - helloworld
+          draft: false
+          prerelease: false
+          files: |
+            ${{ steps.build_step.outputs.archive_path }}
+            ${{ steps.build_step.outputs.output_dir }}/*.apk
+            ${{ steps.build_step.outputs.output_dir }}/SHA256SUMS
+            ${{ steps.build_step.outputs.output_dir }}/BUILD-INFO.txt
+            ${{ steps.build_step.outputs.output_dir }}/repository-packages.txt
+            ${{ steps.build_step.outputs.output_dir }}/install-packages.txt
+            ${{ steps.build_step.outputs.output_dir }}/install-constraints.txt
+            ${{ steps.build_step.outputs.output_dir }}/helloworld-public-key.pem
+          body: |
+            ## OpenWrt ${{ steps.meta.outputs.version }} helloworld 预编译组件
+
+            * **OpenWrt 版本**: `${{ steps.meta.outputs.version }}`
+            * **上游仓库**: `fw876/helloworld`
+            * **上游 Commit**: `${{ steps.meta.outputs.upstream_commit }}`
+            * **适用架构**: `x86_64`

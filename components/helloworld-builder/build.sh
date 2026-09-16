@@ -47,44 +47,53 @@ done
 
 mkdir -p "${WORK_DIR}" "${DOWNLOAD_DIR}"
 
-echo "==> 查询 OpenWrt ${OPENWRT_VERSION} x86_64 官方 SDK..."
-target_index="$(curl -fsSL --retry 3 --connect-timeout 15 "${TARGET_URL}/")" || \
-    die "无法读取 OpenWrt SDK 下载目录: ${TARGET_URL}/"
-sdk_candidates="$(printf '%s' "${target_index}" |
-    grep -oE "openwrt-sdk-${OPENWRT_VERSION//./\\.}-${ARCH}_[^\"<>[:space:]]+\\.Linux-x86_64\\.tar\\.zst" |
-    sort -u || true)"
-sdk_tarball="$(printf '%s\n' "${sdk_candidates}" | sed -n '1p')"
-[ -n "${sdk_tarball}" ] || die "未找到 OpenWrt ${OPENWRT_VERSION} 的 x86_64 SDK"
+SDK_DIR="${SDK_DIR:-}"
 
-sdk_archive="${WORK_DIR}/${sdk_tarball}"
-sdk_dir="${WORK_DIR}/${sdk_tarball%.tar.zst}"
-checksums_file="${WORK_DIR}/sha256sums-${OPENWRT_VERSION}-x86-64"
+if [ -n "${SDK_DIR}" ] && [ -f "${SDK_DIR}/Makefile" ]; then
+    sdk_dir="${SDK_DIR}"
+    sdk_tarball="external-sdk"
+    expected_sha256="external-sdk"
+    echo "==> 使用显式指定的 SDK 目录: ${sdk_dir}"
+else
+    echo "==> 查询 OpenWrt ${OPENWRT_VERSION} x86_64 官方 SDK..."
+    target_index="$(curl -fsSL --retry 3 --connect-timeout 15 "${TARGET_URL}/")" || \
+        die "无法读取 OpenWrt SDK 下载目录: ${TARGET_URL}/"
+    sdk_candidates="$(printf '%s' "${target_index}" |
+        grep -oE "openwrt-sdk-${OPENWRT_VERSION//./\\.}-${ARCH}_[^\"<>[:space:]]+\\.Linux-x86_64\\.tar\\.zst" |
+        sort -u || true)"
+    sdk_tarball="$(printf '%s\n' "${sdk_candidates}" | sed -n '1p')"
+    [ -n "${sdk_tarball}" ] || die "未找到 OpenWrt ${OPENWRT_VERSION} 的 x86_64 SDK"
 
-curl -fsSL --retry 3 --connect-timeout 15 "${TARGET_URL}/sha256sums" -o "${checksums_file}"
-expected_sha256="$(awk -v filename="${sdk_tarball}" '
-    $2 == filename || $2 == "*" filename { print $1; exit }
-' "${checksums_file}")"
-[ -n "${expected_sha256}" ] || die "官方 sha256sums 中没有 ${sdk_tarball}"
+    sdk_archive="${WORK_DIR}/${sdk_tarball}"
+    sdk_dir="${WORK_DIR}/${sdk_tarball%.tar.zst}"
+    checksums_file="${WORK_DIR}/sha256sums-${OPENWRT_VERSION}-x86-64"
 
-archive_is_valid() {
-    printf '%s  %s\n' "${expected_sha256}" "${sdk_archive}" | sha256sum --check --status
-}
+    curl -fsSL --retry 3 --connect-timeout 15 "${TARGET_URL}/sha256sums" -o "${checksums_file}"
+    expected_sha256="$(awk -v filename="${sdk_tarball}" '
+        $2 == filename || $2 == "*" filename { print $1; exit }
+    ' "${checksums_file}")"
+    [ -n "${expected_sha256}" ] || die "官方 sha256sums 中没有 ${sdk_tarball}"
 
-if [ ! -f "${sdk_archive}" ] || ! archive_is_valid; then
-    echo "==> 下载官方 SDK: ${sdk_tarball}"
-    rm -f "${sdk_archive}" "${sdk_archive}.part"
-    curl -fL --retry 3 --connect-timeout 15 "${TARGET_URL}/${sdk_tarball}" \
-        -o "${sdk_archive}.part"
-    mv -f "${sdk_archive}.part" "${sdk_archive}"
+    archive_is_valid() {
+        printf '%s  %s\n' "${expected_sha256}" "${sdk_archive}" | sha256sum --check --status
+    }
+
+    if [ ! -f "${sdk_archive}" ] || ! archive_is_valid; then
+        echo "==> 下载官方 SDK: ${sdk_tarball}"
+        rm -f "${sdk_archive}" "${sdk_archive}.part"
+        curl -fL --retry 3 --connect-timeout 15 "${TARGET_URL}/${sdk_tarball}" \
+            -o "${sdk_archive}.part"
+        mv -f "${sdk_archive}.part" "${sdk_archive}"
+    fi
+    archive_is_valid || die "SDK SHA-256 校验失败: ${sdk_tarball}"
+
+    if [ ! -f "${sdk_dir}/Makefile" ]; then
+        echo "==> 解压 SDK: ${sdk_tarball}"
+        rm -rf "${sdk_dir}"
+        tar --zstd -xf "${sdk_archive}" -C "${WORK_DIR}"
+    fi
+    [ -f "${sdk_dir}/Makefile" ] || die "SDK 解压后目录结构不完整: ${sdk_dir}"
 fi
-archive_is_valid || die "SDK SHA-256 校验失败: ${sdk_tarball}"
-
-if [ ! -f "${sdk_dir}/Makefile" ]; then
-    echo "==> 解压 SDK: ${sdk_tarball}"
-    rm -rf "${sdk_dir}"
-    tar --zstd -xf "${sdk_archive}" -C "${WORK_DIR}"
-fi
-[ -f "${sdk_dir}/Makefile" ] || die "SDK 解压后目录结构不完整: ${sdk_dir}"
 
 echo "==> 获取 helloworld ${HELLOWORLD_REF} 最新源码..."
 if [ -d "${SOURCE_DIR}/.git" ]; then
@@ -261,6 +270,9 @@ fi
 cat > "${OUTPUT_DIR}/BUILD-INFO.txt" <<EOF
 OpenWrt version: ${OPENWRT_VERSION}
 Component interface: ${COMPONENT_INTERFACE_VERSION}
+Target: ${TARGET_PATH%/*}
+Subtarget: ${TARGET_PATH#*/}
+Architecture: ${SDK_ARCH}
 SDK archive: ${sdk_tarball}
 SDK SHA-256: ${expected_sha256}
 helloworld repository: ${HELLOWORLD_REPOSITORY}
