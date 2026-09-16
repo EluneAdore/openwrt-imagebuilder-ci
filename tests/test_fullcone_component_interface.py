@@ -122,6 +122,21 @@ class FullConeComponentInterfaceTests(unittest.TestCase):
             self.orchestrator,
         )
 
+    def test_components_support_sdk_dir_priority(self):
+        for source in (self.runtime, self.luci):
+            self.assertIn('SDK_DIR="${SDK_DIR:-}"', source)
+            self.assertIn('if [ -n "${SDK_DIR}" ] && [ -f "${SDK_DIR}/Makefile" ]; then', source)
+            self.assertIn('sdk_dir="${SDK_DIR}"', source)
+
+    def test_fullcone_workflow_exists_and_calls_authoritative_components(self):
+        workflow_file = ROOT / ".github" / "workflows" / "build-fullcone.yml"
+        self.assertTrue(workflow_file.is_file())
+        workflow_content = workflow_file.read_text()
+        self.assertIn("./components/fullcone-builder/build.sh", workflow_content)
+        self.assertIn("./components/fullcone-builder/build-luci.sh", workflow_content)
+        self.assertIn("component-fullcone-", workflow_content)
+        self.assertIn("resolve-version.sh", workflow_content)
+
 
 if __name__ == "__main__":
     unittest.main()

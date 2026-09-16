@@ -1,0 +1,219 @@
+name: 构建 FullCone 预编译组件
+
+on:
+  schedule:
+    # 每天北京时间上午 10:30 (UTC 02:30) 自动检查并构建
+    - cron: '30 2 * * *'
+  workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: "OpenWrt 官方发布版本 (输入 latest 自动拉取最新稳定版，或指定如 25.12.5)"
+        required: true
+        default: "latest"
+      force_rebuild:
+        description: "是否强制重新编译 (即使已有相同版本产物)"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: 编译 FullCone 组件 (x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - name: 检出代码仓库
+        uses: actions/checkout@v5
+
+      - name: 初始化编译依赖环境
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            binutils \
+            clang \
+            flex \
+            bison \
+            bzip2 \
+            g++ \
+            gcc-multilib \
+            g++-multilib \
+            libncurses-dev \
+            zlib1g-dev \
+            gawk \
+            git \
+            gettext \
+            libssl-dev \
+            rsync \
+            unzip \
+            wget \
+            curl \
+            file \
+            patch \
+            tar \
+            zstd \
+            python3
+
+      - name: 解析 OpenWrt 版本与上游最新 Commit
+        id: meta
+        env:
+          REQUESTED_VERSION: ${{ github.event.inputs.openwrt_version || 'latest' }}
+          FORCE_REBUILD: ${{ github.event.inputs.force_rebuild || 'false' }}
+        run: |
+          chmod +x scripts/*.sh
+          version="$(./scripts/resolve-version.sh "${REQUESTED_VERSION}")"
+          echo "OPENWRT_VERSION=${version}" >> $GITHUB_ENV
+          echo "version=${version}" >> $GITHUB_OUTPUT
+
+          # 获取 upstream ImmortalWrt HEAD commit
+          immortalwrt_commit="$(git ls-remote https://github.com/immortalwrt/immortalwrt.git refs/heads/master 2>/dev/null | awk '{print $1}')"
+          echo "immortalwrt_commit=${immortalwrt_commit}" >> $GITHUB_OUTPUT
+
+          # 获取 upstream 官方 LuCI stable branch commit
+          version_series="$(echo "${version}" | cut -d. -f1-2)"
+          luci_branch="openwrt-${version_series}"
+          luci_commit="$(git ls-remote https://github.com/openwrt/luci.git "refs/heads/${luci_branch}" 2>/dev/null | awk '{print $1}')"
+          if [ -z "${luci_commit}" ]; then
+            luci_commit="$(git ls-remote https://git.openwrt.org/project/luci.git "refs/heads/${luci_branch}" 2>/dev/null | awk '{print $1}')"
+          fi
+          echo "luci_commit=${luci_commit}" >> $GITHUB_OUTPUT
+
+          tag_name="component-fullcone-${version}"
+          echo "tag_name=${tag_name}" >> $GITHUB_OUTPUT
+
+          should_build="true"
+          if [ "${FORCE_REBUILD}" != "true" ]; then
+            if gh release view "${tag_name}" --json assets 2>/dev/null | grep -q "openwrt-component-fullcone-${version}-x86_64.tar.gz"; then
+              mkdir -p /tmp/check_rel_fc
+              if gh release download "${tag_name}" --pattern "BUILD-INFO.txt" --dir /tmp/check_rel_fc 2>/dev/null; then
+                existing_donor="$(awk -F': ' '$1 == "ImmortalWrt donor commit" {print $2; exit}' /tmp/check_rel_fc/BUILD-INFO.txt)"
+                existing_luci="$(awk -F': ' '$1 == "LuCI commit SHA" {print $2; exit}' /tmp/check_rel_fc/BUILD-INFO.txt)"
+                if [ -n "${existing_donor}" ] && [ "${existing_donor}" = "${immortalwrt_commit}" ] && \
+                   [ -n "${existing_luci}" ] && [ "${existing_luci}" = "${luci_commit}" ]; then
+                  echo "==> 预编译 FullCone 组件已有且上游 ImmortalWrt (${existing_donor}) 与 LuCI (${existing_luci}) commit 均未变化，跳过重新编译。"
+                  should_build="false"
+                fi
+              fi
+            fi
+          fi
+          echo "should_build=${should_build}" >> $GITHUB_OUTPUT
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 缓存官方构建工具与源码下载
+        if: steps.meta.outputs.should_build == 'true'
+        uses: actions/cache@v5
+        with:
+          path: |
+            .work/*.tar.zst
+            .work/downloads
+            .work/immortalwrt-source
+            .work/luci-feed
+          key: openwrt-sdk-fullcone-x86_64-${{ steps.meta.outputs.version }}-${{ hashFiles('components/fullcone-builder/**') }}
+          restore-keys: |
+            openwrt-sdk-fullcone-x86_64-${{ steps.meta.outputs.version }}-
+
+      - name: 编译 FullCone 组件 (Runtime + LuCI)
+        if: steps.meta.outputs.should_build == 'true'
+        id: build_step
+        run: |
+          mkdir -p .work
+          RUNTIME_OUTPUT_DIR=".work/fullcone-runtime-packages-${OPENWRT_VERSION}"
+          LUCI_OUTPUT_DIR=".work/fullcone-luci-packages-${OPENWRT_VERSION}"
+          MERGED_OUTPUT_DIR=".work/fullcone-packages-${OPENWRT_VERSION}"
+          rm -rf "${RUNTIME_OUTPUT_DIR}" "${LUCI_OUTPUT_DIR}" "${MERGED_OUTPUT_DIR}"
+          mkdir -p "${RUNTIME_OUTPUT_DIR}" "${LUCI_OUTPUT_DIR}" "${MERGED_OUTPUT_DIR}"
+
+          echo "==> 编译 FullCone 运行时 APK..."
+          OPENWRT_VERSION="${OPENWRT_VERSION}" \
+          WORK_DIR=".work" \
+          OUTPUT_DIR="${RUNTIME_OUTPUT_DIR}" \
+          ./components/fullcone-builder/build.sh
+
+          sdk_dir="$(find .work -maxdepth 1 -type d -name "openwrt-sdk-${OPENWRT_VERSION}-x86-64_*.Linux-x86_64" | head -n 1)"
+
+          echo "==> 编译 FullCone LuCI APK..."
+          OPENWRT_VERSION="${OPENWRT_VERSION}" \
+          WORK_DIR=".work" \
+          OUTPUT_DIR="${LUCI_OUTPUT_DIR}" \
+          SDK_DIR="${sdk_dir}" \
+          ./components/fullcone-builder/build-luci.sh
+
+          echo "==> 合并 FullCone 产物目录..."
+          cp -a "${RUNTIME_OUTPUT_DIR}"/*.apk "${MERGED_OUTPUT_DIR}/"
+          cp -a "${LUCI_OUTPUT_DIR}"/*.apk "${MERGED_OUTPUT_DIR}/"
+          cp -a "${RUNTIME_OUTPUT_DIR}/fullcone-public-key.pem" "${MERGED_OUTPUT_DIR}/"
+          if [ -f "${LUCI_OUTPUT_DIR}/luci-fullcone-public-key.pem" ]; then
+            cp -a "${LUCI_OUTPUT_DIR}/luci-fullcone-public-key.pem" "${MERGED_OUTPUT_DIR}/"
+          fi
+
+          cat "${RUNTIME_OUTPUT_DIR}/repository-packages.txt" "${LUCI_OUTPUT_DIR}/repository-packages.txt" | sort -u > "${MERGED_OUTPUT_DIR}/repository-packages.txt"
+          cat "${RUNTIME_OUTPUT_DIR}/install-packages.txt" "${LUCI_OUTPUT_DIR}/install-packages.txt" > "${MERGED_OUTPUT_DIR}/install-packages.txt"
+          cat "${RUNTIME_OUTPUT_DIR}/install-constraints.txt" "${LUCI_OUTPUT_DIR}/install-constraints.txt" > "${MERGED_OUTPUT_DIR}/install-constraints.txt"
+
+          (
+            cd "${MERGED_OUTPUT_DIR}"
+            sha256sum ./*.apk > SHA256SUMS
+          )
+
+          # 生成合并后的 BUILD-INFO.txt
+          cat > "${MERGED_OUTPUT_DIR}/BUILD-INFO.txt" <<EOF
+OpenWrt version: ${OPENWRT_VERSION}
+Component interface: 1
+Target: x86
+Subtarget: 64
+Architecture: x86_64
+ImmortalWrt donor commit: $(awk -F': ' '$1 ~ /ImmortalWrt (donor|source) commit/ {print $2; exit}' "${RUNTIME_OUTPUT_DIR}/BUILD-INFO.txt")
+ImmortalWrt donor path: package/network/utils/fullconenat-nft
+nft-fullcone source commit: $(awk -F': ' '$1 ~ /nft-fullcone source commit/ {print $2; exit}' "${RUNTIME_OUTPUT_DIR}/BUILD-INFO.txt")
+nft-fullcone mirror hash: $(awk -F': ' '$1 ~ /nft-fullcone mirror hash/ {print $2; exit}' "${RUNTIME_OUTPUT_DIR}/BUILD-INFO.txt")
+Kernel dependency: $(awk -F': ' '$1 ~ /Kernel dependency/ {print $2; exit}' "${RUNTIME_OUTPUT_DIR}/BUILD-INFO.txt")
+LuCI repository: $(awk -F': ' '$1 ~ /LuCI repository/ {print $2; exit}' "${LUCI_OUTPUT_DIR}/BUILD-INFO.txt")
+LuCI ref: $(awk -F': ' '$1 ~ /LuCI ref/ {print $2; exit}' "${LUCI_OUTPUT_DIR}/BUILD-INFO.txt")
+LuCI commit SHA: $(awk -F': ' '$1 ~ /LuCI commit SHA/ {print $2; exit}' "${LUCI_OUTPUT_DIR}/BUILD-INFO.txt")
+Repository packages:
+EOF
+          sed 's/^/  /' "${MERGED_OUTPUT_DIR}/repository-packages.txt" >> "${MERGED_OUTPUT_DIR}/BUILD-INFO.txt"
+
+          COMPONENT_ARCHIVE="openwrt-component-fullcone-${OPENWRT_VERSION}-x86_64.tar.gz"
+          tar -czf "${COMPONENT_ARCHIVE}" -C "${MERGED_OUTPUT_DIR}" .
+          echo "archive_path=${COMPONENT_ARCHIVE}" >> $GITHUB_OUTPUT
+          echo "output_dir=${MERGED_OUTPUT_DIR}" >> $GITHUB_OUTPUT
+
+      - name: 上传构建产物至 Actions Artifacts
+        if: steps.meta.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: fullcone-component-${{ steps.meta.outputs.version }}
+          path: |
+            ${{ steps.build_step.outputs.output_dir }}/*
+            ${{ steps.build_step.outputs.archive_path }}
+          retention-days: 30
+
+      - name: 发布至 GitHub Releases
+        if: steps.meta.outputs.should_build == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag_name }}
+          name: OpenWrt ${{ steps.meta.outputs.version }} Prebuilt Component - FullCone
+          draft: false
+          prerelease: false
+          files: |
+            ${{ steps.build_step.outputs.archive_path }}
+            ${{ steps.build_step.outputs.output_dir }}/*.apk
+            ${{ steps.build_step.outputs.output_dir }}/SHA256SUMS
+            ${{ steps.build_step.outputs.output_dir }}/BUILD-INFO.txt
+            ${{ steps.build_step.outputs.output_dir }}/repository-packages.txt
+            ${{ steps.build_step.outputs.output_dir }}/install-packages.txt
+            ${{ steps.build_step.outputs.output_dir }}/install-constraints.txt
+            ${{ steps.build_step.outputs.output_dir }}/*.pem
+          body: |
+            ## OpenWrt ${{ steps.meta.outputs.version }} FullCone 预编译组件
+
+            * **OpenWrt 版本**: `${{ steps.meta.outputs.version }}`
+            * **ImmortalWrt Commit**: `${{ steps.meta.outputs.immortalwrt_commit }}`
+            * **LuCI Commit**: `${{ steps.meta.outputs.luci_commit }}`
+            * **适用架构**: `x86_64`
