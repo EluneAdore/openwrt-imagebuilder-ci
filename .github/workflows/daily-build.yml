@@ -10,11 +10,6 @@ on:
         description: "OpenWrt 官方发布版本 (输入 latest 自动解析最新稳定版，或指定如 25.12.5)"
         required: true
         default: "latest"
-      force_rebuild:
-        description: "是否强制重新编译组件"
-        required: false
-        type: boolean
-        default: true
 
 concurrency:
   group: daily-openwrt-build
@@ -51,7 +46,7 @@ jobs:
     uses: ./.github/workflows/build-helloworld.yml
     with:
       openwrt_version: ${{ needs.resolve-version.outputs.version }}
-      force_rebuild: ${{ github.event_name == 'schedule' || inputs.force_rebuild != false }}
+      force_rebuild: true
     secrets: inherit
 
   fullcone:
@@ -60,7 +55,7 @@ jobs:
     uses: ./.github/workflows/build-fullcone.yml
     with:
       openwrt_version: ${{ needs.resolve-version.outputs.version }}
-      force_rebuild: ${{ github.event_name == 'schedule' || inputs.force_rebuild != false }}
+      force_rebuild: true
     secrets: inherit
 
   firmware:

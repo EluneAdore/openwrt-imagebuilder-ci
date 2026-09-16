@@ -90,7 +90,7 @@ class CIWorkflowsOrchestratorTests(unittest.TestCase):
         with open(daily_path, "r", encoding="utf-8") as fp:
             data = yaml.load(fp, Loader=UniqueKeyLoader)
 
-        # Concurrency
+        # Concurrency: 绝不中断正在进行的构建
         concurrency = data.get("concurrency")
         self.assertEqual(concurrency.get("group"), "daily-openwrt-build")
         self.assertFalse(concurrency.get("cancel-in-progress"))
@@ -112,12 +112,14 @@ class CIWorkflowsOrchestratorTests(unittest.TestCase):
         self.assertEqual(hw_job.get("uses"), "./.github/workflows/build-helloworld.yml")
         self.assertEqual(hw_job.get("secrets"), "inherit")
         self.assertEqual(hw_job.get("with", {}).get("openwrt_version"), "${{ needs.resolve-version.outputs.version }}")
+        self.assertTrue(hw_job.get("with", {}).get("force_rebuild"))
 
         fc_job = jobs["fullcone"]
         self.assertEqual(fc_job.get("needs"), "resolve-version")
         self.assertEqual(fc_job.get("uses"), "./.github/workflows/build-fullcone.yml")
         self.assertEqual(fc_job.get("secrets"), "inherit")
         self.assertEqual(fc_job.get("with", {}).get("openwrt_version"), "${{ needs.resolve-version.outputs.version }}")
+        self.assertTrue(fc_job.get("with", {}).get("force_rebuild"))
 
         # 固件装配 firmware 必须等待 resolve-version, helloworld, fullcone
         fw_job = jobs["firmware"]
@@ -131,6 +133,49 @@ class CIWorkflowsOrchestratorTests(unittest.TestCase):
         self.assertEqual(fw_job.get("with", {}).get("openwrt_version"), "${{ needs.resolve-version.outputs.version }}")
         self.assertTrue(fw_job.get("with", {}).get("publish_release"))
 
+    def test_child_workflows_have_no_conflicting_concurrency(self):
+        # 确保三个子工作流没有定义可能取消正在运行任务的 concurrency
+        for name in ("build-helloworld.yml", "build-fullcone.yml", "build.yml"):
+            path = WORKFLOWS_DIR / name
+            with open(path, "r", encoding="utf-8") as fp:
+                data = yaml.load(fp, Loader=UniqueKeyLoader)
+            self.assertNotIn("concurrency", data, f"{name} should not define standalone concurrency")
+
+    def test_force_rebuild_bypasses_all_skip_logic(self):
+        # 验证两个组件工作流中的 skip 逻辑受 force_rebuild 严格限制
+        hw_content = (WORKFLOWS_DIR / "build-helloworld.yml").read_text(encoding="utf-8")
+        fc_content = (WORKFLOWS_DIR / "build-fullcone.yml").read_text(encoding="utf-8")
+
+        for content, name in ((hw_content, "build-helloworld.yml"), (fc_content, "build-fullcone.yml")):
+            # 1. 明确的跳过绕过日志
+            self.assertIn(
+                'echo "==> Daily/forced rebuild requested: bypassing existing component cache/release skip logic"',
+                content,
+                f"{name} 缺少 force_rebuild 日志提示",
+            )
+            # 2. 只有在 else 分支下才允许 should_build="false"
+            self.assertIn('if [ "${FORCE_REBUILD}" = "true" ]; then', content)
+            self.assertIn('should_build="false"', content)
+
+    def test_build_steps_and_release_executed_on_force_rebuild(self):
+        # 验证在 should_build=true 时，所有构建、校验和 Release 步骤均会执行，且支持覆写
+        for name in ("build-helloworld.yml", "build-fullcone.yml"):
+            with open(WORKFLOWS_DIR / name, "r", encoding="utf-8") as fp:
+                data = yaml.load(fp, Loader=UniqueKeyLoader)
+
+            steps = data["jobs"]["build"]["steps"]
+            step_names = [s.get("name") for s in steps]
+
+            # 核心构建步骤必须存在
+            self.assertTrue(any("编译" in s for s in step_names), f"{name} 缺少编译步骤")
+            self.assertTrue(any("验证" in s for s in step_names), f"{name} 缺少校验步骤")
+            self.assertTrue(any("发布至 GitHub Releases" in s for s in step_names), f"{name} 缺少发布步骤")
+
+            # 检查 Release 步骤必须配置 overwrite_files: true
+            rel_step = next(s for s in steps if s.get("name") == "发布至 GitHub Releases")
+            self.assertEqual(rel_step.get("if"), "steps.meta.outputs.should_build == 'true'")
+            self.assertTrue(rel_step.get("with", {}).get("overwrite_files"))
+
     def test_firmware_workflow_avoids_reresolving_concrete_version(self):
         content = (WORKFLOWS_DIR / "build.yml").read_text(encoding="utf-8")
         # 确保包含正则判断，避免再次网络解析版本
@@ -140,4 +185,3 @@ class CIWorkflowsOrchestratorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

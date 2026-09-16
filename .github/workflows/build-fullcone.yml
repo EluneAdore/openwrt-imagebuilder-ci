@@ -94,7 +94,9 @@ jobs:
           echo "tag_name=${tag_name}" >> $GITHUB_OUTPUT
 
           should_build="true"
-          if [ "${FORCE_REBUILD}" != "true" ]; then
+          if [ "${FORCE_REBUILD}" = "true" ]; then
+            echo "==> Daily/forced rebuild requested: bypassing existing component cache/release skip logic"
+          else
             if gh release view "${tag_name}" --json assets 2>/dev/null | grep -q "openwrt-component-fullcone-${version}-x86_64.tar.gz"; then
               mkdir -p /tmp/check_rel_fc
               if gh release download "${tag_name}" --pattern "*BUILD-INFO.txt" --dir /tmp/check_rel_fc 2>/dev/null; then
