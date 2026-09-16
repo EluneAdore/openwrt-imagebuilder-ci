@@ -38,3 +38,4 @@ if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]]; then
 fi
 
 printf '%s\n' "${version}"
+
