@@ -68,6 +68,8 @@ HELLOWORLD_OUTPUT_DIR="${WORK_DIR}/helloworld-packages-${OPENWRT_VERSION}"
 HELLOWORLD_COMPONENT="${WORKSPACE_ROOT}/components/helloworld-builder/build.sh"
 FULLCONE_OUTPUT_DIR="${WORK_DIR}/fullcone-packages-${OPENWRT_VERSION}"
 LUCI_FULLCONE_OUTPUT_DIR="${WORK_DIR}/luci-fullcone-packages-${OPENWRT_VERSION}"
+FULLCONE_COMPONENT="${WORKSPACE_ROOT}/components/fullcone-builder/build.sh"
+FULLCONE_LUCI_COMPONENT="${WORKSPACE_ROOT}/components/fullcone-builder/build-luci.sh"
 
 IB_TARBALL="openwrt-imagebuilder-${OPENWRT_VERSION}-${ARCH}.Linux-x86_64.tar.zst"
 IB_DIR_NAME="openwrt-imagebuilder-${OPENWRT_VERSION}-${ARCH}.Linux-x86_64"
@@ -159,19 +161,27 @@ GO_FEED_BRANCH="${GO_FEED_BRANCH:-master}" \
 
 # 4. 使用同一个官方 SDK 编译 ImmortalWrt nftables FullCone 调用链
 echo "==> 开始源码编译 FullCone APK 调用链..."
+[ -x "${FULLCONE_COMPONENT}" ] || {
+    echo "❌ 错误: 缺少 fullcone-builder 组件入口: ${FULLCONE_COMPONENT}" >&2
+    exit 1
+}
 OPENWRT_VERSION="${OPENWRT_VERSION}" \
 WORK_DIR="${WORK_DIR}" \
 OUTPUT_DIR="${FULLCONE_OUTPUT_DIR}" \
 ARCH="${ARCH}" \
-"${SCRIPT_DIR}/build-fullcone.sh"
+"${FULLCONE_COMPONENT}"
 
 # 5. 在官方 LuCI 上编译 FullCone capability detection 与防火墙开关
 echo "==> 开始编译 FullCone LuCI APK..."
+[ -x "${FULLCONE_LUCI_COMPONENT}" ] || {
+    echo "❌ 错误: 缺少 fullcone-builder LuCI 组件入口: ${FULLCONE_LUCI_COMPONENT}" >&2
+    exit 1
+}
 OPENWRT_VERSION="${OPENWRT_VERSION}" \
 WORK_DIR="${WORK_DIR}" \
 OUTPUT_DIR="${LUCI_FULLCONE_OUTPUT_DIR}" \
 ARCH="${ARCH}" \
-"${SCRIPT_DIR}/build-luci-fullcone.sh"
+"${FULLCONE_LUCI_COMPONENT}"
 
 # 6. 将所有同版 SDK 产物导入 ImageBuilder 本地 APK 仓库
 echo "==> 导入自编译本地 APK 仓库..."

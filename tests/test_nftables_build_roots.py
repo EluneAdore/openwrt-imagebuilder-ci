@@ -4,7 +4,13 @@ import unittest
 from pathlib import Path
 
 
-SCRIPT = Path(__file__).parents[1] / "scripts" / "find-nftables-build-roots.py"
+SCRIPT = (
+    Path(__file__).parents[1]
+    / "components"
+    / "fullcone-builder"
+    / "scripts"
+    / "find-nftables-build-roots.py"
+)
 SPEC = importlib.util.spec_from_file_location("find_nftables_build_roots", SCRIPT)
 MODULE = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None

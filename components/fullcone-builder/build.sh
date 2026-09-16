@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 使用与固件完全相同的 OpenWrt SDK 编译 ImmortalWrt nftables FullCone 调用链。
-# ImageBuilder 只负责安装这里产生的 APK，不编译或替换内核。
+# FullCone builder component interface v1.  It uses the OpenWrt SDK matching the
+# final firmware to compile the ImmortalWrt nftables FullCone call chain.
+# ImageBuilder only installs the resulting APKs; it never builds or replaces a
+# kernel.
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+readonly COMPONENT_INTERFACE_VERSION=1
+COMPONENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 OPENWRT_VERSION="${OPENWRT_VERSION:?必须指定 OPENWRT_VERSION}"
 WORK_DIR="${WORK_DIR:?必须指定 WORK_DIR}"
@@ -77,7 +79,7 @@ immortalwrt_fw4_makefile="${IMMORTALWRT_DIR}/package/network/config/firewall4/Ma
 
 for patch_file in "${immortalwrt_libnftnl_patch}" "${immortalwrt_nftables_patch}" "${immortalwrt_fw4_patch}"; do
     [ -f "${patch_file}" ] || \
-        die "ImmortalWrt HEAD 缺少补丁文件: ${patch_file#${IMMORTALWRT_DIR}/}"
+        die "ImmortalWrt HEAD 缺少补丁文件: ${patch_file#"${IMMORTALWRT_DIR}"/}"
 done
 
 [ -f "${immortalwrt_libnftnl_makefile}" ] || \
@@ -88,9 +90,11 @@ grep -Fxq 'PKG_FIXUP:=autoreconf' "${immortalwrt_libnftnl_makefile}" || \
 grep -Fq '+kmod-nft-fullcone' "${immortalwrt_fw4_makefile}" || \
     die "ImmortalWrt HEAD firewall4 Makefile 未声明 kmod-nft-fullcone 依赖关系"
 
+# shellcheck disable=SC2016 # Literal OpenWrt Make syntax, not shell expansion.
 grep -Fq 'PKG_SOURCE ?= $(PKG_SOURCE_SUBDIR).tar.zst' \
     "${IMMORTALWRT_DIR}/include/download.mk" || \
     die "ImmortalWrt HEAD 已不再使用与官方 OpenWrt 25.12 兼容的 tar.zst 源码归档"
+# shellcheck disable=SC2016 # Literal OpenWrt Make syntax, not shell expansion.
 grep -Fq '$(subst -,.,$(PKG_SOURCE_DATE)),0)~$(call version_abbrev,$(PKG_SOURCE_VERSION))' \
     "${IMMORTALWRT_DIR}/include/download.mk" || \
     die "ImmortalWrt HEAD 已不再使用预期的日期~commit 源码版本格式"
@@ -143,8 +147,10 @@ fi
 
 cd "${sdk_dir}"
 
+# shellcheck disable=SC2016 # Literal OpenWrt Make syntax, not shell expansion.
 grep -Fq 'PKG_SOURCE ?= $(PKG_SOURCE_SUBDIR).tar.zst' include/download.mk || \
     die "官方 SDK 已不再使用预期的 tar.zst 源码归档格式"
+# shellcheck disable=SC2016 # Literal OpenWrt Make syntax, not shell expansion.
 grep -Fq '$(subst -,.,$(PKG_SOURCE_DATE)),0)~$(call version_abbrev,$(PKG_SOURCE_VERSION))' \
     include/download.mk || \
     die "官方 SDK 已不再使用预期的日期~commit 源码版本格式"
@@ -285,7 +291,7 @@ done
 
 # 确认 OpenWrt 实际生成的 package DAG 能从单一 firewall4 目标传递覆盖
 # nftables、libnftnl、FullCone 内核模块及真实的 package/kernel/linux 目标。
-python3 "${WORKSPACE_ROOT}/scripts/validate-fullcone-dag.py" \
+python3 "${COMPONENT_DIR}/scripts/validate-fullcone-dag.py" \
     "${sdk_dir}/tmp/.packagedeps"
 
 readonly -a fullcone_clean_targets=(
@@ -307,7 +313,7 @@ if ! make -j"${JOBS}" package/feeds/base/firewall4/compile DL_DIR="${DOWNLOAD_DI
 fi
 
 nftables_build_roots="$(python3 \
-    "${WORKSPACE_ROOT}/scripts/find-nftables-build-roots.py" \
+    "${COMPONENT_DIR}/scripts/find-nftables-build-roots.py" \
     "${sdk_dir}/build_dir")" || die "nftables-json build tree 定位器执行失败"
 nftables_build_dirs=()
 while IFS= read -r build_dir; do
@@ -463,6 +469,7 @@ done
 
 cat > "${OUTPUT_DIR}/BUILD-INFO.txt" <<EOF
 OpenWrt version: ${OPENWRT_VERSION}
+Component interface: ${COMPONENT_INTERFACE_VERSION}
 Target: ${TARGET_PATH}
 Architecture: ${SDK_ARCH}
 SDK archive: ${sdk_tarball}

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 在官方 OpenWrt LuCI 源码上应用 ImmortalWrt openwrt-25.12 的最小
-# FullCone UI 增量，并使用与固件完全同版的官方 SDK 重新编译 APK。
+# FullCone builder component interface v1.  It applies the smallest ImmortalWrt
+# openwrt-25.12 UI delta to the official LuCI source and rebuilds it in the SDK
+# matching the final firmware.
 
 OPENWRT_VERSION="${OPENWRT_VERSION:?必须指定 OPENWRT_VERSION}"
 WORK_DIR="${WORK_DIR:?必须指定 WORK_DIR}"
@@ -13,14 +14,15 @@ JOBS="${JOBS:-$(nproc)}"
 
 readonly IMMORTALWRT_LUCI_BRANCH="openwrt-25.12"
 readonly IMMORTALWRT_LUCI_COMMIT="d6167ea0645cbd1327708d85f94824f42d0eb872"
+readonly COMPONENT_INTERFACE_VERSION=1
 readonly -a REQUIRED_PACKAGES=(
     luci-base
     luci-app-firewall
     luci-i18n-firewall-zh-cn
 )
 
-WORKSPACE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PATCH_DIR="${WORKSPACE_ROOT}/patches/luci-fullcone"
+COMPONENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PATCH_DIR="${COMPONENT_DIR}/patches/luci-fullcone"
 DOWNLOAD_DIR="${WORK_DIR}/downloads"
 
 die() {
@@ -186,6 +188,7 @@ done
 
 cat > "${OUTPUT_DIR}/BUILD-INFO.txt" <<EOF
 OpenWrt version: ${OPENWRT_VERSION}
+Component interface: ${COMPONENT_INTERFACE_VERSION}
 Official LuCI commit: ${official_luci_commit}
 ImmortalWrt LuCI branch: ${IMMORTALWRT_LUCI_BRANCH}
 ImmortalWrt LuCI reference commit: ${IMMORTALWRT_LUCI_COMMIT}

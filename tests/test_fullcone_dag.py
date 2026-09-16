@@ -6,7 +6,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VALIDATOR_PATH = ROOT / "scripts" / "validate-fullcone-dag.py"
+VALIDATOR_PATH = ROOT / "components" / "fullcone-builder" / "scripts" / "validate-fullcone-dag.py"
 FIXTURE_PATH = ROOT / "tests" / "fixtures" / "openwrt-25.12.5-fullcone.packagedeps"
 
 spec = importlib.util.spec_from_file_location("validate_fullcone_dag", VALIDATOR_PATH)

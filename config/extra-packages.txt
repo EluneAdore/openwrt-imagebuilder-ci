@@ -42,5 +42,5 @@ dnsmasq-full                        # 安装完整版 dnsmasq（SSR Plus 必需�
 kmod-nft-tproxy                     # nftables TPROXY 透明代理内核模块
 kmod-nft-socket                     # nftables socket 匹配内核模块
 
-# FullCone 四件套由 build-fullcone.sh 锁定到 @custom 本地仓库；
+# FullCone 四件套由 fullcone-builder 组件锁定到 @custom 本地仓库；
 # kmod-nft-nat 由 firewall4 与 kmod-nft-fullcone 的运行时依赖自动安装。
