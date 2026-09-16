@@ -1,0 +1,77 @@
+name: 每日自动构建固件流水线
+
+on:
+  schedule:
+    # 每天北京时间上午 10:00 (UTC 02:00) 自动触发全链路构建
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: "OpenWrt 官方发布版本 (输入 latest 自动解析最新稳定版，或指定如 25.12.5)"
+        required: true
+        default: "latest"
+      force_rebuild:
+        description: "是否强制重新编译组件"
+        required: false
+        type: boolean
+        default: true
+
+concurrency:
+  group: daily-openwrt-build
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  resolve-version:
+    name: 统一解析 OpenWrt 官方最新稳定版
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+    steps:
+      - name: 检出代码仓库
+        uses: actions/checkout@v5
+
+      - name: 解析版本号
+        id: resolve
+        env:
+          REQUESTED_VERSION: ${{ inputs.openwrt_version || github.event.inputs.openwrt_version || 'latest' }}
+        run: |
+          chmod +x scripts/*.sh
+          version="$(./scripts/resolve-version.sh "${REQUESTED_VERSION}")"
+          echo "version=${version}" >> $GITHUB_OUTPUT
+          echo "==> 锁定的唯一 OpenWrt 版本: ${version}"
+
+  helloworld:
+    name: 预编译 helloworld 组件
+    needs: resolve-version
+    uses: ./.github/workflows/build-helloworld.yml
+    with:
+      openwrt_version: ${{ needs.resolve-version.outputs.version }}
+      force_rebuild: ${{ github.event_name == 'schedule' || inputs.force_rebuild != false }}
+    secrets: inherit
+
+  fullcone:
+    name: 预编译 FullCone 组件
+    needs: resolve-version
+    uses: ./.github/workflows/build-fullcone.yml
+    with:
+      openwrt_version: ${{ needs.resolve-version.outputs.version }}
+      force_rebuild: ${{ github.event_name == 'schedule' || inputs.force_rebuild != false }}
+    secrets: inherit
+
+  firmware:
+    name: 固件纯装配并发布 (Assembly-Only)
+    needs:
+      - resolve-version
+      - helloworld
+      - fullcone
+    uses: ./.github/workflows/build.yml
+    with:
+      openwrt_version: ${{ needs.resolve-version.outputs.version }}
+      rootfs_partsize: "2048"
+      publish_release: true
+    secrets: inherit

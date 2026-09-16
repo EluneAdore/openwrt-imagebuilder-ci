@@ -1,9 +1,6 @@
 name: 构建 OpenWrt 固件
 
 on:
-  schedule:
-    # 每天北京时间 (UTC+8) 下午 12:15 准时自动触发构建 (即 04:15 UTC)
-    - cron: '15 4 * * *'
   workflow_dispatch:
     inputs:
       openwrt_version:
@@ -23,6 +20,27 @@ on:
         required: false
         type: boolean
         default: false
+  workflow_call:
+    inputs:
+      openwrt_version:
+        description: "OpenWrt 官方发布版本"
+        required: true
+        type: string
+      rootfs_partsize:
+        description: "根分区大小 ROOTFS_PARTSIZE (MB，默认 2048 即 2GB)"
+        required: false
+        type: string
+        default: "2048"
+      grub_timeout:
+        description: "GRUB 引导倒计时 (秒，默认 0 即开机不等待)"
+        required: false
+        type: string
+        default: "0"
+      publish_release:
+        description: "是否同时发布到 GitHub Releases"
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: write
@@ -53,10 +71,14 @@ jobs:
       - name: 锁定 OpenWrt 版本并生成构建时间戳
         id: version
         env:
-          REQUESTED_OPENWRT_VERSION: ${{ github.event.inputs.openwrt_version || 'latest' }}
+          REQUESTED_OPENWRT_VERSION: ${{ inputs.openwrt_version || github.event.inputs.openwrt_version || 'latest' }}
         run: |
           chmod +x scripts/*.sh
-          version="$(./scripts/resolve-version.sh "${REQUESTED_OPENWRT_VERSION}")"
+          if [[ "${REQUESTED_OPENWRT_VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?$ ]]; then
+            version="${REQUESTED_OPENWRT_VERSION}"
+          else
+            version="$(./scripts/resolve-version.sh "${REQUESTED_OPENWRT_VERSION}")"
+          fi
           BUILD_DATE=$(date +"%Y%m%d-%H%M")
           echo "OPENWRT_VERSION=${version}" >> $GITHUB_ENV
           echo "BUILD_DATE=${BUILD_DATE}" >> $GITHUB_ENV
@@ -146,8 +168,8 @@ jobs:
 
       - name: 执行固件纯装配打包 (Assembly-Only)
         env:
-          ROOTFS_PARTSIZE: ${{ github.event.inputs.rootfs_partsize || '2048' }}
-          GRUB_TIMEOUT: ${{ github.event.inputs.grub_timeout || '0' }}
+          ROOTFS_PARTSIZE: ${{ inputs.rootfs_partsize || github.event.inputs.rootfs_partsize || '2048' }}
+          GRUB_TIMEOUT: ${{ inputs.grub_timeout || github.event.inputs.grub_timeout || '0' }}
         run: |
           chmod +x scripts/*.sh scripts/*.py
           mkdir -p .work
@@ -211,13 +233,14 @@ jobs:
           retention-days: 30
 
       - name: 自动发布 GitHub Release
-        if: ${{ github.event.inputs.publish_release == 'true' }}
+        if: ${{ inputs.publish_release == true || github.event.inputs.publish_release == 'true' || github.event.inputs.publish_release == true }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag_name }}
           name: ${{ steps.meta.outputs.release_title }}
           draft: false
           prerelease: false
+          overwrite_files: true
           files: |
             bin/*combined-efi*.img.gz*
             bin/sha256sums

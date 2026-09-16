@@ -1,9 +1,6 @@
 name: 构建 helloworld 预编译组件
 
 on:
-  schedule:
-    # 每天北京时间上午 10:00 (UTC 02:00) 自动检查并构建
-    - cron: '0 2 * * *'
   workflow_dispatch:
     inputs:
       openwrt_version:
@@ -12,6 +9,17 @@ on:
         default: "latest"
       force_rebuild:
         description: "是否强制重新编译 (即使已有相同版本产物)"
+        required: false
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      openwrt_version:
+        description: "OpenWrt 官方发布版本"
+        required: true
+        type: string
+      force_rebuild:
+        description: "是否强制重新编译"
         required: false
         type: boolean
         default: false
@@ -60,8 +68,8 @@ jobs:
       - name: 解析 OpenWrt 版本与上游最新 Commit
         id: meta
         env:
-          REQUESTED_VERSION: ${{ github.event.inputs.openwrt_version || 'latest' }}
-          FORCE_REBUILD: ${{ github.event.inputs.force_rebuild || 'false' }}
+          REQUESTED_VERSION: ${{ inputs.openwrt_version || github.event.inputs.openwrt_version || 'latest' }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild == true || github.event.inputs.force_rebuild == 'true' || github.event.inputs.force_rebuild == true }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x scripts/*.sh
@@ -206,6 +214,7 @@ jobs:
           name: OpenWrt ${{ steps.meta.outputs.version }} Prebuilt Component - helloworld
           draft: false
           prerelease: false
+          overwrite_files: true
           files: |
             ${{ steps.package_step.outputs.archive_path }}
             ${{ steps.build_step.outputs.output_dir }}/*.apk
