@@ -405,6 +405,16 @@ if [ -d "${OUTPUT_SOURCE_DIR}" ]; then
         fi
     done < "${LUCI_FULLCONE_OUTPUT_DIR}/install-packages.txt"
 
+    # 机器校验：固件 Manifest 中的 LuCI 组件版本必须与 FullCone LuCI 预编译组件元数据完全一致
+    while IFS='=' read -r pkg_name expected_version; do
+        [ -n "${pkg_name}" ] && [ -n "${expected_version}" ] || continue
+        manifest_version="$(awk -v pkg="${pkg_name}" '$1 == pkg { print $3; exit }' "${MANIFEST_FILE}")"
+        if [ "${manifest_version}" != "${expected_version}" ]; then
+            echo "❌ 错误: 固件 Manifest 中的 ${pkg_name} 版本 (${manifest_version:-未知}) 与 FullCone LuCI 组件版本 (${expected_version}) 不一致。" >&2
+            exit 1
+        fi
+    done < "${LUCI_FULLCONE_OUTPUT_DIR}/repository-packages.txt"
+
     # FullCone 四层调用链和精确 kernel ABI 都必须出现在最终固件中。
     while IFS= read -r required_package; do
         if ! awk '{print $1}' "${MANIFEST_FILE}" | grep -Fxq "${required_package}"; then

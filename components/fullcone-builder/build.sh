@@ -467,16 +467,21 @@ done
     sha256sum ./*.apk > SHA256SUMS
 )
 
+target="${TARGET_PATH%/*}"
+subtarget="${TARGET_PATH#*/}"
+
 cat > "${OUTPUT_DIR}/BUILD-INFO.txt" <<EOF
 OpenWrt version: ${OPENWRT_VERSION}
 Component interface: ${COMPONENT_INTERFACE_VERSION}
-Target: ${TARGET_PATH}
+Target: ${target}
+Subtarget: ${subtarget}
 Architecture: ${SDK_ARCH}
 SDK archive: ${sdk_tarball}
 SDK SHA-256: ${expected_sha256}
+ImmortalWrt donor commit: ${immortalwrt_head_commit}
 ImmortalWrt source commit: ${immortalwrt_head_commit}
 ImmortalWrt donor path: ${IMMORTALWRT_FULLCONE_PATH}
-nft-fullcone upstream commit: ${fullcone_upstream_commit}
+nft-fullcone source commit: ${fullcone_upstream_commit}
 nft-fullcone mirror hash: ${fullcone_mirror_hash}
 Kernel dependency: ${kernel_dependency}
 Patched packages:

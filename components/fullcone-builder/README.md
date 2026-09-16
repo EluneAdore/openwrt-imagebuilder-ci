@@ -26,11 +26,17 @@ It retains the SDK dependency-closure check, one-top-level-firewall4 build DAG,
 autoreconf injection, donor checks, prepared/generated parser validation, and
 APK runtime evidence validation.
 
-`build-luci.sh` produces the unchanged LuCI contract:
+`build-luci.sh` tracks the latest official LuCI stable feed revision for the
+target OpenWrt release series (`openwrt-${VERSION_SERIES}`), updates the SDK's
+`feeds/luci` to that revision, precisely reapplies FullCone patches with strict
+fail-fast validation, and compiles `luci-base`, `luci-app-firewall`, and
+`luci-i18n-firewall-zh-cn`. It produces:
 
 - `luci-base`, `luci-app-firewall`, and `luci-i18n-firewall-zh-cn` APKs;
 - `luci-fullcone-public-key.pem`, package/install metadata, `SHA256SUMS`, and
-  `BUILD-INFO.txt`.
+  `BUILD-INFO.txt` (recording Target, Subtarget, Arch, LuCI repository, LuCI ref,
+  LuCI commit SHA, and donor commit).
 
 The main orchestrator imports both outputs into `@custom` and retains firmware,
-manifest, kernel ABI, and final rootfs validation.
+manifest, kernel ABI, exact LuCI package version matching, and final rootfs
+validation.

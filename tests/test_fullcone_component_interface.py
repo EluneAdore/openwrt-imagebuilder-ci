@@ -64,6 +64,65 @@ class FullConeComponentInterfaceTests(unittest.TestCase):
         self.assertIn('components/fullcone-builder', self.luci_wrapper)
         self.assertIn('exec "${COMPONENT_BUILD}" "$@"', self.luci_wrapper)
 
+    def test_luci_dynamic_stable_branch_resolution_and_fail_fast(self):
+        self.assertIn(
+            'VERSION_SERIES="$(echo "${OPENWRT_VERSION}" | cut -d. -f1-2)"',
+            self.luci,
+        )
+        self.assertIn(
+            'LUCI_BRANCH="${LUCI_BRANCH:-openwrt-${VERSION_SERIES}}"',
+            self.luci,
+        )
+        self.assertIn('git ls-remote --heads "${LUCI_REPOSITORY}"', self.luci)
+        self.assertIn(
+            'die "无法在官方 LuCI 仓库中找到 OpenWrt ${OPENWRT_VERSION} 对应的 stable branch: ${LUCI_BRANCH}（严禁使用 master 或猜测分支）"',
+            self.luci,
+        )
+        self.assertNotIn('LUCI_BRANCH="master"', self.luci)
+        self.assertNotIn('checkout master', self.luci)
+
+    def test_luci_compiles_both_base_and_app_firewall(self):
+        self.assertIn('package/feeds/luci/luci-base/compile', self.luci)
+        self.assertIn('package/feeds/luci/luci-app-firewall/compile', self.luci)
+
+    def test_luci_build_info_contains_metadata_tracking(self):
+        for field in (
+            "Target: ${target}",
+            "Subtarget: ${subtarget}",
+            "Architecture: ${SDK_ARCH}",
+            "LuCI repository: ${LUCI_REPOSITORY}",
+            "LuCI ref: ${luci_ref}",
+            "LuCI commit SHA: ${luci_commit}",
+            "ImmortalWrt donor commit: ${immortalwrt_donor_commit}",
+            "nft-fullcone source commit: ${fullcone_source_commit}",
+        ):
+            self.assertIn(field, self.luci)
+
+    def test_runtime_build_info_contains_target_subtarget_and_donor(self):
+        for field in (
+            "Target: ${target}",
+            "Subtarget: ${subtarget}",
+            "Architecture: ${SDK_ARCH}",
+            "ImmortalWrt donor commit: ${immortalwrt_head_commit}",
+            "nft-fullcone source commit: ${fullcone_upstream_commit}",
+        ):
+            self.assertIn(field, self.runtime)
+
+    def test_orchestrator_validates_luci_manifest_versions_match_component(self):
+        self.assertIn(
+            'done < "${LUCI_FULLCONE_OUTPUT_DIR}/repository-packages.txt"',
+            self.orchestrator,
+        )
+        self.assertIn(
+            'manifest_version="$(awk -v pkg="${pkg_name}" \'$1 == pkg { print $3; exit }\' "${MANIFEST_FILE}")"',
+            self.orchestrator,
+        )
+        self.assertIn(
+            '与 FullCone LuCI 组件版本 (${expected_version}) 不一致',
+            self.orchestrator,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
+
