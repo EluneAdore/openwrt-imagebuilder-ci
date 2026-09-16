@@ -63,5 +63,56 @@ class FirmwareAssemblyOnlyTests(unittest.TestCase):
             self.assertIn(evidence, self.script_content)
 
 
+class FirmwareCIWorkflowAssemblyOnlyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.workflow_path = ROOT / ".github" / "workflows" / "build.yml"
+        cls.workflow_content = cls.workflow_path.read_text(encoding="utf-8")
+
+    def test_workflow_exists_and_is_valid_yaml(self):
+        self.assertTrue(self.workflow_path.is_file())
+        try:
+            import yaml
+            data = yaml.safe_load(self.workflow_content)
+            self.assertIsInstance(data, dict)
+        except ImportError:
+            pass
+
+    def test_workflow_strictly_forbids_sdk_download_or_cache(self):
+        forbidden = (
+            "openwrt-sdk-x86_64",
+            "setup-sdk.sh",
+            "SDK_DIR",
+        )
+        for item in forbidden:
+            self.assertNotIn(item, self.workflow_content)
+
+    def test_workflow_strictly_forbids_component_compilation(self):
+        forbidden = (
+            "./scripts/build.sh",
+            "components/helloworld-builder/build.sh",
+            "components/fullcone-builder/build.sh",
+            "components/fullcone-builder/build-luci.sh",
+        )
+        for item in forbidden:
+            self.assertNotIn(item, self.workflow_content)
+
+    def test_workflow_calls_build_firmware_with_explicit_components(self):
+        self.assertIn("./scripts/build-firmware.sh", self.workflow_content)
+        for var in (
+            "HELLOWORLD_COMPONENT_DIR",
+            "FULLCONE_RUNTIME_DIR",
+            "FULLCONE_LUCI_DIR",
+        ):
+            self.assertIn(var, self.workflow_content)
+
+    def test_workflow_downloads_matching_components_with_fail_fast(self):
+        self.assertIn("openwrt-component-helloworld-${OPENWRT_VERSION}-x86_64.tar.gz", self.workflow_content)
+        self.assertIn("openwrt-component-fullcone-${OPENWRT_VERSION}-x86_64.tar.gz", self.workflow_content)
+        self.assertIn("component-helloworld-${OPENWRT_VERSION}", self.workflow_content)
+        self.assertIn("component-fullcone-${OPENWRT_VERSION}", self.workflow_content)
+        self.assertIn("严禁降级混拼旧版本或回退编译", self.workflow_content)
+
+
 if __name__ == "__main__":
     unittest.main()
