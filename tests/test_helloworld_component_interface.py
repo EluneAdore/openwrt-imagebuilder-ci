@@ -73,13 +73,13 @@ class HelloworldComponentInterfaceTests(unittest.TestCase):
         self.assertIn("helloworld-public-key.pem", workflow_content)
         self.assertIn("CUSTOM_SIGNING_KEY", workflow_content)
         for pkg in (
+            "dns2tcp",
+            "ipt2socks",
+            "lua-neturl",
             "luci-app-ssr-plus",
             "luci-i18n-ssr-plus-zh-cn",
-            "xray-core",
             "mihomo",
-            "v2ray-geoip",
-            "v2ray-geosite",
-            "shadowsocks-rust",
+            "xray-core",
         ):
             self.assertIn(pkg, workflow_content)
 

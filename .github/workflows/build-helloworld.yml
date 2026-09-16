@@ -139,19 +139,27 @@ jobs:
           output_dir="${{ steps.build_step.outputs.output_dir }}"
           echo "==> 验证 helloworld 构建目录: ${output_dir}"
 
-          # 1. 验证必需 APK 是否存在
-          required_apks=(
-            "luci-app-ssr-plus"
-            "luci-i18n-ssr-plus-zh-cn"
-            "xray-core"
-            "mihomo"
-            "v2ray-geoip"
-            "v2ray-geosite"
-            "shadowsocks-rust"
-          )
-          for pkg in "${required_apks[@]}"; do
-            ls "${output_dir}/${pkg}"-*.apk >/dev/null 2>&1 || {
-              echo "❌ 错误: 缺少必需 APK: ${pkg}" >&2
+          # 1. 验证构建产物 APK 与 repository-packages.txt 一一对应
+          shopt -s nullglob
+          package_files=("${output_dir}"/*.apk)
+          shopt -u nullglob
+          [ ${#package_files[@]} -gt 0 ] || {
+            echo "❌ 错误: helloworld 输出目录中没有 APK" >&2
+            exit 1
+          }
+
+          while IFS='=' read -r pkg_name pkg_ver; do
+            [ -n "${pkg_name}" ] || continue
+            ls "${output_dir}/${pkg_name}"-*.apk >/dev/null 2>&1 || {
+              echo "❌ 错误: 未找到 repository-packages.txt 中声明的 APK: ${pkg_name}" >&2
+              exit 1
+            }
+          done < "${output_dir}/repository-packages.txt"
+
+          # 验证核心目标包与依赖包均已生成
+          for core_pkg in luci-app-ssr-plus luci-i18n-ssr-plus-zh-cn xray-core mihomo dns2tcp ipt2socks lua-neturl; do
+            grep -Eq "^${core_pkg}=" "${output_dir}/repository-packages.txt" || {
+              echo "❌ 错误: repository-packages.txt 中缺少核心目标: ${core_pkg}" >&2
               exit 1
             }
           done

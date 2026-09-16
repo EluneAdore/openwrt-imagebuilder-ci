@@ -142,6 +142,9 @@ class FullConeComponentInterfaceTests(unittest.TestCase):
         self.assertIn("sha256sum --check --strict SHA256SUMS", workflow_content)
         self.assertIn("kernel-dependency.txt", workflow_content)
         self.assertIn("fullcone-public-key.pem", workflow_content)
+        self.assertIn("luci-fullcone-public-key.pem", workflow_content)
+        self.assertIn("runtime", workflow_content)
+        self.assertIn("luci", workflow_content)
         for pkg in (
             "kmod-nft-fullcone",
             "libnftnl11",
