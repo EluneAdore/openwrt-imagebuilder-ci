@@ -281,7 +281,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag_name }}
-          name: OpenWrt ${{ steps.meta.outputs.version }} Prebuilt Component - FullCone
+          name: OpenWrt ${{ steps.meta.outputs.version }} FullCone 预编译组件 (Runtime + LuCI)
           draft: false
           prerelease: false
           overwrite_files: true
@@ -294,9 +294,30 @@ jobs:
             ${{ steps.build_step.outputs.output_dir }}/luci/luci-fullcone-public-key.pem
             ${{ steps.build_step.outputs.output_dir }}/release-assets/*
           body: |
-            ## OpenWrt ${{ steps.meta.outputs.version }} FullCone 预编译组件
+            ## 🔄 OpenWrt ${{ steps.meta.outputs.version }} FullCone 预编译组件
 
-            * **OpenWrt 版本**: `${{ steps.meta.outputs.version }}`
-            * **ImmortalWrt Commit**: `${{ steps.meta.outputs.immortalwrt_commit }}`
-            * **LuCI Commit**: `${{ steps.meta.outputs.luci_commit }}`
-            * **适用架构**: `x86_64`
+            本项目专用的 FullCone NAT 预编译套件，包含完整的底层运行时（Runtime）与 Web 管理控制台（LuCI），与官方发行版内核 ABI 严格匹配。
+
+            ### 📋 构建与环境信息
+            - **目标 OpenWrt 版本**：`${{ steps.meta.outputs.version }}`
+            - **适用架构**：`x86_64`
+            - **供体源码 (ImmortalWrt Commit)**：`${{ steps.meta.outputs.immortalwrt_commit }}`
+            - **LuCI 源码 (LuCI Commit)**：`${{ steps.meta.outputs.luci_commit }}`
+            - **构建工具链**：官方同版 OpenWrt SDK (`gcc-14.3.0` / `musl`)
+
+            ### 🧩 包含软件包清单 (APKs)
+            #### 1. 运行时组件 (Runtime)
+            - `kmod-nft-fullcone`：匹配官方内核 ABI 的 nftables FullCone 内核模块
+            - `libnftnl11`：支持 fullcone expression 的底层 netlink 库
+            - `nftables-json`：支持 fullcone 规则语法的用户态规则管理工具
+            - `firewall4`：支持 FullCone 规则注入与运行时探测的防火墙组件
+
+            #### 2. 控制台组件 (LuCI)
+            - `luci-app-firewall`：带 FullCone 开关控制的防火墙界面
+            - `luci-i18n-firewall-zh-cn`：防火墙控制台简体中文语言包（集成 FullCone 汉化）
+            - `luci-base`：配套构建的 LuCI 基础支持库
+
+            > 🛡️ **安全与质量保证**：
+            > 1. **内核 ABI 严格对齐**：严禁 `--force-depends`，内核模块依赖与官方目标内核完全吻合；
+            > 2. **硬核质量验收**：已静态校验 elf 符号、grammar/lexer 解析器及 ucode 规则生成模板；
+            > 3. **内置自检命令**：刷机后可在终端运行 `/usr/sbin/fullcone-check [syntax|status|restart|luci]` 一键核验状态。

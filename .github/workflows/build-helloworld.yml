@@ -213,7 +213,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag_name }}
-          name: OpenWrt ${{ steps.meta.outputs.version }} Prebuilt Component - helloworld
+          name: OpenWrt ${{ steps.meta.outputs.version }} helloworld 预编译组件 (SSR Plus / Xray / Mihomo)
           draft: false
           prerelease: false
           overwrite_files: true
@@ -227,9 +227,25 @@ jobs:
             ${{ steps.build_step.outputs.output_dir }}/install-constraints.txt
             ${{ steps.build_step.outputs.output_dir }}/helloworld-public-key.pem
           body: |
-            ## OpenWrt ${{ steps.meta.outputs.version }} helloworld 预编译组件
+            ## 📦 OpenWrt ${{ steps.meta.outputs.version }} helloworld 预编译组件
 
-            * **OpenWrt 版本**: `${{ steps.meta.outputs.version }}`
-            * **上游仓库**: `fw876/helloworld`
-            * **上游 Commit**: `${{ steps.meta.outputs.upstream_commit }}`
-            * **适用架构**: `x86_64`
+            本项目专用的 SSR Plus / Xray / Mihomo 预编译套件，基于 OpenWrt 官方完全同版 SDK 构建。
+
+            ### 📋 构建与环境信息
+            - **目标 OpenWrt 版本**：`${{ steps.meta.outputs.version }}`
+            - **适用架构**：`x86_64`
+            - **上游源码仓库**：[`fw876/helloworld`](https://github.com/fw876/helloworld)
+            - **上游 Commit**：`${{ steps.meta.outputs.upstream_commit }}`
+            - **构建工具链**：官方同版 OpenWrt SDK (`gcc-14.3.0` / `musl`)
+
+            ### 🧩 包含软件包清单 (APKs)
+            - `luci-app-ssr-plus`：SSR Plus 主程序控制台
+            - `luci-i18n-ssr-plus-zh-cn`：SSR Plus 简体中文语言包
+            - `xray-core`：Xray 核心模块
+            - `mihomo`：Mihomo (Clash.Meta) 核心模块
+            - `dns2tcp`、`ipt2socks`、`lua-neturl`：网络转发与 Lua 辅助支持库
+
+            > 💡 **集成说明**：
+            > 1. 本组件包已剔除 `naiveproxy`；
+            > 2. `v2ray-geoip` 与 `v2ray-geosite` 规则数据包在装配时由同版官方源提供，以保证数据最新；
+            > 3. 固件装配流水线通过 `@custom` 本地签名仓库无缝集成以上产物。
