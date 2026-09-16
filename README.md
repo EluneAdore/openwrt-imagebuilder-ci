@@ -59,11 +59,11 @@
 ### 1. 云端构建 (GitHub Actions)
 - **每日自动构建**：每天**北京时间上午 10:00**（即 `02:00 UTC`）由主流水线 (`daily-build.yml`) 自动触发：
   1. 统一解析一次 OpenWrt 官方最新稳定版，锁定单一版本号；
-  2. 并行触发 `helloworld` 与 `FullCone` 预编译组件流水线，强制重新编译 (`force_rebuild: true`) 并更新 Release assets；
-  3. 两大组件成功生成最新 assets 后，主流水线的 `firmware` job 自动执行零编译固件纯装配并发布最终固件。
+  2. 并行触发 `helloworld` 与 `FullCone` 预编译组件流水线，强制重新编译 (`force_rebuild: true`) 并更新组件 Release assets；
+  3. 两大组件就绪后，主流水线的 `firmware` job 自动执行零编译固件纯装配（构建产物默认保存于 Actions Artifacts，保留 30 天）。
 - **纯净提交策略**：代码推送 (Push) 不触发构建，避免不必要的 Actions 额度消耗。
 - **手动触发构建**：
-  - **主流水线**：在 Actions -> **每日自动构建 OpenWrt 固件** 中点击 **Run workflow**，一键执行全链路版本解析、组件重编与固件装配发布；
+  - **主流水线**：在 Actions -> **每日自动构建 OpenWrt 固件** 中点击 **Run workflow**，支持自定义 `openwrt_version`、`rootfs_partsize`、`publish_release`（默认 `false` 不发布到 GitHub Releases，勾选后才发布）；
   - **独立组件预编译**：可在对应的 **构建 helloworld 预编译组件** 或 **构建 FullCone 预编译组件** 流水线中单独手动触发。
 
 ### 2. 本地纯装配构建 (Ubuntu / Debian / WSL2)

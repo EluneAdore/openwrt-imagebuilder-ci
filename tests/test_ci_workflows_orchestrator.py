@@ -199,6 +199,24 @@ class CIWorkflowsOrchestratorTests(unittest.TestCase):
         self.assertIn("openwrt-component-helloworld-${OPENWRT_VERSION}-x86_64.tar.gz", fw_section)
         self.assertIn("openwrt-component-fullcone-${OPENWRT_VERSION}-x86_64.tar.gz", fw_section)
 
+    def test_publish_release_defaults_to_false(self):
+        daily_path = WORKFLOWS_DIR / "daily-build.yml"
+        with open(daily_path, "r", encoding="utf-8") as fp:
+            data = yaml.load(fp, Loader=UniqueKeyLoader)
+
+        triggers = data.get("on") or data.get(True)
+        dispatch_inputs = triggers["workflow_dispatch"]["inputs"]
+        self.assertIn("publish_release", dispatch_inputs)
+        self.assertFalse(dispatch_inputs["publish_release"]["default"])
+
+        # Release 步骤仅在显式传入 publish_release 为 true 时执行
+        steps = data["jobs"]["firmware"]["steps"]
+        rel_step = next(s for s in steps if s.get("name") == "自动发布 GitHub Release")
+        self.assertEqual(
+            rel_step.get("if"),
+            "${{ github.event.inputs.publish_release == 'true' || github.event.inputs.publish_release == true }}",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -19,10 +19,10 @@ on:
         required: false
         default: "0"
       publish_release:
-        description: "是否同时发布到 GitHub Releases (默认 true 发布)"
+        description: "是否同时发布到 GitHub Releases (默认 false 不发布，仅保留在 Actions 产物中)"
         required: false
         type: boolean
-        default: true
+        default: false
 
 concurrency:
   group: daily-openwrt-build
@@ -255,7 +255,7 @@ jobs:
           retention-days: 30
 
       - name: 自动发布 GitHub Release
-        if: ${{ github.event_name == 'schedule' || github.event.inputs.publish_release == 'true' || github.event.inputs.publish_release == true }}
+        if: ${{ github.event.inputs.publish_release == 'true' || github.event.inputs.publish_release == true }}
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag_name }}
