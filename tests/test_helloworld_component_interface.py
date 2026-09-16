@@ -63,6 +63,11 @@ class HelloworldComponentInterfaceTests(unittest.TestCase):
         self.assertIn("component-helloworld-", workflow_content)
         self.assertIn("resolve-version.sh", workflow_content)
 
+    def test_component_cleans_wsl_path(self):
+        self.assertIn('CLEAN_PATH=""', self.component)
+        self.assertIn('export PATH="$CLEAN_PATH"', self.component)
+
+
 
 if __name__ == "__main__":
     unittest.main()

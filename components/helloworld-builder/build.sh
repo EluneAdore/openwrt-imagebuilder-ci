@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 清理 WSL2 环境下从 Windows 继承的含空格或特殊字符 PATH (防止 Golang Makefile 及 shell 解析报错)
+CLEAN_PATH=""
+IFS=':' read -ra ADDR <<< "$PATH"
+for p in "${ADDR[@]}"; do
+    case "$p" in
+        /mnt/*|*" "*|*"("*|*")"*) continue ;;
+        *) CLEAN_PATH="${CLEAN_PATH:+${CLEAN_PATH}:}$p" ;;
+    esac
+done
+export PATH="$CLEAN_PATH"
+
 # Component interface v1. 按 fw876/helloworld 官方 release-packages.yml 的
 # 方式，使用与固件版本完全一致的 OpenWrt SDK 编译 APK。编译目标跟随官方
 # 列表，但按项目要求排除 naiveproxy。
@@ -15,6 +26,10 @@ HELLOWORLD_REPOSITORY="${HELLOWORLD_REPOSITORY:-https://github.com/fw876/hellowo
 HELLOWORLD_REF="${HELLOWORLD_REF:-dev}"
 GO_FEED_BRANCH="${GO_FEED_BRANCH:-master}"
 JOBS="${JOBS:-$(nproc)}"
+
+mkdir -p "${WORK_DIR}" "${OUTPUT_DIR}"
+WORK_DIR="$(cd "${WORK_DIR}" && pwd)"
+OUTPUT_DIR="$(cd "${OUTPUT_DIR}" && pwd)"
 
 readonly TARGET_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${TARGET_PATH}"
 readonly COMPONENT_INTERFACE_VERSION=1
@@ -51,6 +66,7 @@ SDK_DIR="${SDK_DIR:-}"
 
 if [ -n "${SDK_DIR}" ] && [ -f "${SDK_DIR}/Makefile" ]; then
     sdk_dir="${SDK_DIR}"
+    sdk_dir="$(cd "${sdk_dir}" && pwd)"
     sdk_tarball="external-sdk"
     expected_sha256="external-sdk"
     echo "==> 使用显式指定的 SDK 目录: ${sdk_dir}"
