@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 
 
-BUILD_SCRIPT = Path(__file__).parents[1] / "scripts" / "build.sh"
+BUILD_SCRIPT = Path(__file__).parents[1] / "scripts" / "build-firmware.sh"
 
 
 class RootfsFullConeValidatorTests(unittest.TestCase):

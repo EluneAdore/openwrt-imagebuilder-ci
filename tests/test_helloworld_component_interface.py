@@ -4,16 +4,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPONENT = ROOT / "components" / "helloworld-builder" / "build.sh"
-WRAPPER = ROOT / "scripts" / "build-helloworld.sh"
-ORCHESTRATOR = ROOT / "scripts" / "build.sh"
 
 
 class HelloworldComponentInterfaceTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.component = COMPONENT.read_text()
-        cls.wrapper = WRAPPER.read_text()
-        cls.orchestrator = ORCHESTRATOR.read_text()
 
     def test_component_requires_stable_inputs(self):
         for variable in ("OPENWRT_VERSION", "WORK_DIR", "OUTPUT_DIR"):

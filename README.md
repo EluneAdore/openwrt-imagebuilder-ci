@@ -29,23 +29,25 @@
 
 ```text
 .
-├── .github/workflows/build.yml   # GitHub Actions CI 工作流 (定时/手动构建)
+├── .github/workflows/
+│   ├── build.yml                 # 固件纯装配 CI (Assembly-Only，零编译/零SDK)
+│   ├── build-helloworld.yml      # helloworld 预编译组件 CI
+│   └── build-fullcone.yml        # FullCone 预编译组件 CI
 ├── config/
 │   ├── custom-feeds.conf         # 第三方软件源列表 (支持 ${VERSION_SERIES} 动态分支)
-│   ├── extra-packages.txt        # 预装软件包清单 (支持行内与独立 # 注释)
+│   └── extra-packages.txt        # 增量软件包清单 (支持行内与独立 # 注释)
 ├── files/                        # 自定义根文件系统覆盖目录 (打包时自动合入固件)
 │   └── etc/uci-defaults/         # 首次开机自动初始化脚本
 ├── scripts/
-│   ├── build.sh                  # 核心固件构建与归档流水线
-│   ├── build-helloworld.sh       # helloworld-builder 兼容入口
-│   ├── build-fullcone.sh         # fullcone-builder runtime 兼容入口
-│   ├── build-luci-fullcone.sh    # fullcone-builder LuCI 兼容入口
+│   ├── build-firmware.sh         # 固件纯装配独立流水线 (Assembly-Only)
+│   ├── resolve-version.sh        # OpenWrt 官方最新稳定版解析工具
 │   ├── diff_manifest.py          # 软件包清单差分比对工具
-│   └── setup-env.sh              # 本地编译依赖检测与自动安装
+│   ├── setup-env.sh              # 本地编译依赖检测与自动安装
+│   └── setup-sdk.sh              # 组件编译共享 SDK 环境准备工具
 ├── components/
-│   └── helloworld-builder/       # 单仓库 SSR Plus 构建组件
-│   └── fullcone-builder/          # 单仓库 FullCone runtime、LuCI 与构建期验证组件
-├── tests/                        # FullCone DAG、build tree 与 rootfs validator 测试
+│   ├── helloworld-builder/       # SSR Plus / Xray / Mihomo 预编译组件
+│   └── fullcone-builder/         # FullCone runtime 与 LuCI 预编译组件
+├── tests/                        # 契约测试、装配测试与 Rootfs 校验测试
 ├── Makefile                      # 常用构建命令快捷入口
 └── README.md
 ```
@@ -62,12 +64,12 @@
   - `rootfs_partsize`: 默认 `2048` MB (2GB)；
   - `publish_release`: 是否发布到 Releases（默认 `false`，构建产物统一保存在 Artifacts 中保留 30 天）。
 
-### 2. 本地构建 (Ubuntu / Debian / WSL2)
+### 2. 本地纯装配构建 (Ubuntu / Debian / WSL2)
 ```bash
-# 1. 检查并安装构建依赖
+# 1. 检查并安装基本依赖
 make env
 
-# 2. 执行编译与打包 (产物输出至 bin/ 目录)
+# 2. 执行固件纯装配 (产物输出至 bin/ 目录)
 make build
 
 # 常用自定义参数示例:
@@ -75,17 +77,18 @@ ROOTFS_PARTSIZE=4096 make build        # 自定义根分区大小为 4GB
 OPENWRT_VERSION=25.12.5 make build     # 指定特定版本进行构建
 ```
 
-首次构建需要下载 SDK，并编译 `luci-app-ssr-plus`、`xray-core`、`mihomo` 及必要依赖，耗时会明显长于单独使用 ImageBuilder；后续构建会复用 `.work/downloads` 下载缓存。SDK 不会预下载 `naiveproxy` 的上游源码，它也不参与编译或固件打包。
-
-本项目日常开发可在 WSL2/Linux 上先完成本地验证，再由 GitHub Actions 的干净环境做最终兼容性验收。不要将其他发行版预编译的内核模块或 APK 放入官方 OpenWrt ImageBuilder，也不要使用 `--force-depends` 绕过内核 ABI。
+项目采用**解耦架构**：
+- **组件预编译 CI**：在独立工作流中使用官方 SDK 编译各组件并发布为 GitHub Releases 资产。
+- **固件装配 CI / 本地装配**：直接基于已有预编译组件目录或下载 Release 资产，调用官方 ImageBuilder 执行纯装配（无需下载 SDK，零编译，构建时间仅需约 1～3 分钟）。严禁使用 `--force-depends` 绕过内核 ABI。
 
 ### 3. 构建产物说明 (`bin/`)
 - `openwrt-*-x86-64-generic-squashfs-combined-efi-YYYYMMDD-HHMM.img.gz`：UEFI 引导固件压缩包
 - `sha256sums`：SHA256 校验和文件
 - `*.manifest`：固件集成软件包完整清单
 - `manifest.diff` / `manifest.md`：软件包版本变动差异对比报告
-- `helloworld-build-info.txt`：本次 SDK、helloworld 源码提交与编译目标记录
-- `fullcone-build-info.txt`：本次 SDK、ImmortalWrt donor、nft-fullcone 上游提交、APK 版本与内核依赖记录
+- `helloworld-build-info.txt`：本次 helloworld 源码提交与编译目标元数据记录
+- `fullcone-runtime-build-info.txt`：本次 ImmortalWrt donor、nft-fullcone 上游提交、内核 ABI 记录
+- `fullcone-luci-build-info.txt`：本次 LuCI 稳定分支 commit 与回溯补丁元数据记录
 
 ---
 
@@ -196,8 +199,8 @@ fullcone-check status
 修改构建脚本后可运行：
 
 ```bash
-bash -n scripts/build.sh scripts/build-fullcone.sh scripts/build-helloworld.sh scripts/build-luci-fullcone.sh components/helloworld-builder/build.sh components/fullcone-builder/build.sh components/fullcone-builder/build-luci.sh
-shellcheck scripts/build.sh scripts/build-fullcone.sh scripts/build-helloworld.sh scripts/build-luci-fullcone.sh components/helloworld-builder/build.sh components/fullcone-builder/build.sh components/fullcone-builder/build-luci.sh
+bash -n scripts/*.sh components/*/*.sh
+shellcheck scripts/*.sh components/*/*.sh
 python3 -m unittest discover -s tests -v
 git diff --check
 ```

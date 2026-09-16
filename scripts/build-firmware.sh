@@ -484,9 +484,7 @@ grep -Fq 'fullcone=1' "${ROOTFS_DIR}/etc/uci-defaults/99-custom-defaults" || \
 # 导出构建元数据
 cp -f "${HELLOWORLD_COMPONENT_DIR}/BUILD-INFO.txt" "${BIN_DIR}/helloworld-build-info.txt"
 cp -f "${FULLCONE_RUNTIME_DIR}/BUILD-INFO.txt" "${BIN_DIR}/fullcone-runtime-build-info.txt"
-cp -f "${FULLCONE_RUNTIME_DIR}/BUILD-INFO.txt" "${BIN_DIR}/fullcone-build-info.txt"
 cp -f "${FULLCONE_LUCI_DIR}/BUILD-INFO.txt" "${BIN_DIR}/fullcone-luci-build-info.txt"
-cp -f "${FULLCONE_LUCI_DIR}/BUILD-INFO.txt" "${BIN_DIR}/luci-fullcone-build-info.txt"
 
 if [ -n "${MANIFEST_FILE}" ] && [ -f "${SCRIPT_DIR}/diff_manifest.py" ]; then
     python3 "${SCRIPT_DIR}/diff_manifest.py" \

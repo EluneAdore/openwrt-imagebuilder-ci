@@ -32,9 +32,12 @@ help:
 env:
 	@bash scripts/setup-env.sh
 
-# 固件构建目标
+# 固件纯装配构建目标
 build:
-	@bash scripts/build.sh
+	@HELLOWORLD_COMPONENT_DIR="$${HELLOWORLD_COMPONENT_DIR:-$$(ls -d .work/helloworld-packages-* .work/helloworld-component 2>/dev/null | head -n 1)}" \
+	 FULLCONE_RUNTIME_DIR="$${FULLCONE_RUNTIME_DIR:-$$(ls -d .work/fullcone-packages-* .work/fullcone-component/runtime 2>/dev/null | head -n 1)}" \
+	 FULLCONE_LUCI_DIR="$${FULLCONE_LUCI_DIR:-$$(ls -d .work/luci-fullcone-packages-* .work/fullcone-component/luci 2>/dev/null | head -n 1)}" \
+	 bash scripts/build-firmware.sh
 
 image: build
 

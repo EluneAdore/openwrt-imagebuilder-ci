@@ -6,9 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 COMPONENT_DIR = ROOT / "components" / "fullcone-builder"
 RUNTIME_COMPONENT = COMPONENT_DIR / "build.sh"
 LUCI_COMPONENT = COMPONENT_DIR / "build-luci.sh"
-RUNTIME_WRAPPER = ROOT / "scripts" / "build-fullcone.sh"
-LUCI_WRAPPER = ROOT / "scripts" / "build-luci-fullcone.sh"
-ORCHESTRATOR = ROOT / "scripts" / "build.sh"
+ASSEMBLY_SCRIPT = ROOT / "scripts" / "build-firmware.sh"
 
 
 class FullConeComponentInterfaceTests(unittest.TestCase):
@@ -16,9 +14,7 @@ class FullConeComponentInterfaceTests(unittest.TestCase):
     def setUpClass(cls):
         cls.runtime = RUNTIME_COMPONENT.read_text()
         cls.luci = LUCI_COMPONENT.read_text()
-        cls.runtime_wrapper = RUNTIME_WRAPPER.read_text()
-        cls.luci_wrapper = LUCI_WRAPPER.read_text()
-        cls.orchestrator = ORCHESTRATOR.read_text()
+        cls.assembly_script = ASSEMBLY_SCRIPT.read_text()
 
     def test_entries_require_stable_inputs(self):
         for source in (self.runtime, self.luci):
@@ -50,19 +46,11 @@ class FullConeComponentInterfaceTests(unittest.TestCase):
         ):
             self.assertIn(evidence, self.luci)
 
-    def test_orchestrator_and_compatibility_wrappers_use_components(self):
-        self.assertIn(
-            'FULLCONE_COMPONENT="${WORKSPACE_ROOT}/components/fullcone-builder/build.sh"',
-            self.orchestrator,
-        )
-        self.assertIn(
-            'FULLCONE_LUCI_COMPONENT="${WORKSPACE_ROOT}/components/fullcone-builder/build-luci.sh"',
-            self.orchestrator,
-        )
-        self.assertIn('components/fullcone-builder', self.runtime_wrapper)
-        self.assertIn('exec "${COMPONENT_BUILD}" "$@"', self.runtime_wrapper)
-        self.assertIn('components/fullcone-builder', self.luci_wrapper)
-        self.assertIn('exec "${COMPONENT_BUILD}" "$@"', self.luci_wrapper)
+    def test_assembly_script_consumes_fullcone_components(self):
+        self.assertIn("${FULLCONE_RUNTIME_DIR:?", self.assembly_script)
+        self.assertIn("${FULLCONE_LUCI_DIR:?", self.assembly_script)
+        self.assertIn("fullcone-runtime-build-info.txt", self.assembly_script)
+        self.assertIn("fullcone-luci-build-info.txt", self.assembly_script)
 
     def test_luci_dynamic_stable_branch_resolution_and_fail_fast(self):
         self.assertIn(
@@ -108,18 +96,18 @@ class FullConeComponentInterfaceTests(unittest.TestCase):
         ):
             self.assertIn(field, self.runtime)
 
-    def test_orchestrator_validates_luci_manifest_versions_match_component(self):
+    def test_assembly_script_validates_luci_manifest_versions_match_component(self):
         self.assertIn(
-            'done < "${LUCI_FULLCONE_OUTPUT_DIR}/repository-packages.txt"',
-            self.orchestrator,
+            'done < "${FULLCONE_LUCI_DIR}/repository-packages.txt"',
+            self.assembly_script,
         )
         self.assertIn(
             'manifest_version="$(awk -v pkg="${pkg_name}" \'$1 == pkg { print $3; exit }\' "${MANIFEST_FILE}")"',
-            self.orchestrator,
+            self.assembly_script,
         )
         self.assertIn(
-            '与 FullCone LuCI 组件版本 (${expected_version}) 不一致',
-            self.orchestrator,
+            '与预编译组件版本 (${expected_version}) 不一致',
+            self.assembly_script,
         )
 
     def test_components_support_sdk_dir_priority(self):

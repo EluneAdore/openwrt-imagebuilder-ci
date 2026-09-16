@@ -8,7 +8,7 @@
 # ------------------------------------------------------------------------------
 luci                                # LuCI 网页管理界面基础框架
 luci-i18n-base-zh-cn                # LuCI 基础控制台简体中文语言包
-luci-i18n-firewall-zh-cn            # 防火墙设置简体中文语言包
+# luci-i18n-firewall-zh-cn 由 fullcone-builder (LuCI) 组件权威注入并强约束 @custom
 luci-i18n-package-manager-zh-cn     # 软件包管理与在线卸载界面简体中文包
 luci-i18n-attendedsysupgrade-zh-cn  # Attended Sysupgrade 在线升级简体中文语言包
 luci-theme-footstrap                # 现代化侧边栏 Footstrap 主题 (支持暗黑/明亮自适应模式)

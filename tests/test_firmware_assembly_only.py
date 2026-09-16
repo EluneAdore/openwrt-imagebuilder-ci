@@ -62,6 +62,13 @@ class FirmwareAssemblyOnlyTests(unittest.TestCase):
         ):
             self.assertIn(evidence, self.script_content)
 
+    def test_assembly_script_exports_unified_metadata(self):
+        self.assertIn("helloworld-build-info.txt", self.script_content)
+        self.assertIn("fullcone-runtime-build-info.txt", self.script_content)
+        self.assertIn("fullcone-luci-build-info.txt", self.script_content)
+        self.assertNotIn("fullcone-build-info.txt", self.script_content)
+        self.assertNotIn("luci-fullcone-build-info.txt", self.script_content)
+
 
 class FirmwareCIWorkflowAssemblyOnlyTests(unittest.TestCase):
     @classmethod
