@@ -62,6 +62,7 @@ jobs:
         env:
           REQUESTED_VERSION: ${{ github.event.inputs.openwrt_version || 'latest' }}
           FORCE_REBUILD: ${{ github.event.inputs.force_rebuild || 'false' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x scripts/*.sh
           version="$(./scripts/resolve-version.sh "${REQUESTED_VERSION}")"
@@ -100,8 +101,6 @@ jobs:
             fi
           fi
           echo "should_build=${should_build}" >> $GITHUB_OUTPUT
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: 缓存官方构建工具与源码下载
         if: steps.meta.outputs.should_build == 'true'
