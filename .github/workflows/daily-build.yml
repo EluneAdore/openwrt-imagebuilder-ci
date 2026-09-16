@@ -75,3 +75,4 @@ jobs:
       rootfs_partsize: "2048"
       publish_release: true
     secrets: inherit
+
