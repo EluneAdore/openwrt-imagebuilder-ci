@@ -37,13 +37,15 @@
 │   └── etc/uci-defaults/         # 首次开机自动初始化脚本
 ├── scripts/
 │   ├── build.sh                  # 核心固件构建与归档流水线
-│   ├── build-helloworld.sh       # 使用同版 OpenWrt SDK 源码编译 SSR Plus APK
+│   ├── build-helloworld.sh       # helloworld-builder 兼容入口
 │   ├── build-fullcone.sh         # 使用同版 OpenWrt SDK 编译 nftables FullCone APK
 │   ├── build-luci-fullcone.sh    # 在官方 LuCI 上编译 FullCone 防火墙开关
 │   ├── diff_manifest.py          # 软件包清单差分比对工具
 │   ├── find-nftables-build-roots.py # 定位唯一的 nftables prepared source root
 │   ├── validate-fullcone-dag.py  # 验证 firewall4 目标的传递依赖闭包
 │   └── setup-env.sh              # 本地编译依赖检测与自动安装
+├── components/
+│   └── helloworld-builder/       # 单仓库 SSR Plus 构建组件
 ├── tests/                        # FullCone DAG、build tree 与 rootfs validator 测试
 ├── Makefile                      # 常用构建命令快捷入口
 └── README.md
@@ -114,7 +116,7 @@ OPENWRT_VERSION=25.12.5 make build     # 指定特定版本进行构建
 ## ⚙️ 自定义配置指南
 
 - **增减软件包**：编辑 [`config/extra-packages.txt`](config/extra-packages.txt)，每行一个软件包名称，支持使用 `#` 撰写中文注释（构建脚本会自动剥离注释与空行）。
-- **SSR Plus 源码构建**：[`scripts/build-helloworld.sh`](scripts/build-helloworld.sh) 移植自 [fw876/helloworld 官方 APK CI](https://github.com/fw876/helloworld/blob/dev/.github/workflows/release-packages.yml)。它动态下载与固件完全同版的官方 SDK，校验 SHA-256，使用 SDK 固定的官方 feeds，再编译官方列表中的 `luci-app-ssr-plus`、`xray-core`、`mihomo`；项目按需求排除了 `naiveproxy`，并从同版 OpenWrt 官方 packages feed 安装 `v2ray-geoip` 与 `v2ray-geosite`。
+- **SSR Plus 源码构建**：[`components/helloworld-builder/build.sh`](components/helloworld-builder/build.sh) 移植自 [fw876/helloworld 官方 APK CI](https://github.com/fw876/helloworld/blob/dev/.github/workflows/release-packages.yml)。它通过稳定的环境变量输入/输出接口供主编排器调用，动态下载与固件完全同版的官方 SDK，校验 SHA-256，使用 SDK 固定的官方 feeds，再编译官方列表中的 `luci-app-ssr-plus`、`xray-core`、`mihomo`；项目按需求排除了 `naiveproxy`，并从同版 OpenWrt 官方 packages feed 安装 `v2ray-geoip` 与 `v2ray-geosite`。
 - **FullCone NAT**：[`scripts/build-fullcone.sh`](scripts/build-fullcone.sh) 动态跟随 ImmortalWrt HEAD，只提取 `fullconenat-nft` package 以及 libnftnl、nftables、firewall4 的 FullCone 补丁。所有组件都在与 ImageBuilder 完全相同版本、target、subtarget、architecture 和 kernel ABI 的官方 OpenWrt SDK 中重新编译。
 - **FullCone LuCI**：[`scripts/build-luci-fullcone.sh`](scripts/build-luci-fullcone.sh) 在官方 OpenWrt LuCI 源码上应用 ImmortalWrt `openwrt-25.12` 的最小功能与简体中文补丁，重新编译 `luci-base`、`luci-app-firewall` 与 `luci-i18n-firewall-zh-cn`。防火墙页面仅在 `nft_fullcone`（或 donor 兼容的 `xt_FULLCONENAT`）模块实际加载时显示 IPv4/IPv6 FullCone 开关。
 - **依赖与来源校验**：编译产生的 helloworld 与 FullCone APK 会组成签名的临时本地仓库；SSR Plus、Xray、Mihomo、中文包及 FullCone 四件套通过 `@custom` 标签锁定到本次源码产物。GeoIP/GeoSite 数据包来自同版 OpenWrt 官方源。构建结束后会检查 Manifest 和 GeoData 文件，缺少任一目标、kernel ABI 不一致或出现 `naiveproxy` 都会使构建失败。
@@ -195,8 +197,8 @@ fullcone-check status
 修改构建脚本后可运行：
 
 ```bash
-bash -n scripts/build.sh scripts/build-fullcone.sh scripts/build-helloworld.sh scripts/build-luci-fullcone.sh
-shellcheck scripts/build.sh scripts/build-fullcone.sh scripts/build-helloworld.sh scripts/build-luci-fullcone.sh
+bash -n scripts/build.sh scripts/build-fullcone.sh scripts/build-helloworld.sh scripts/build-luci-fullcone.sh components/helloworld-builder/build.sh
+shellcheck scripts/build.sh scripts/build-fullcone.sh scripts/build-helloworld.sh scripts/build-luci-fullcone.sh components/helloworld-builder/build.sh
 python3 -m unittest discover -s tests -v
 git diff --check
 ```

@@ -35,7 +35,7 @@ open-vm-tools                       # VMware / ESXi 虚拟化集成增强服务
 
 # ------------------------------------------------------------------------------
 # 5. SSR Plus 透明代理与 DNS 依赖
-# luci-app-ssr-plus、中文包、Xray 与 Mihomo 由 build-helloworld.sh 注入。
+# luci-app-ssr-plus、中文包、Xray 与 Mihomo 由 helloworld-builder 组件注入。
 # ------------------------------------------------------------------------------
 -dnsmasq                            # 移除精简版 dnsmasq (精简版不含 nftset 域名分流支持)
 dnsmasq-full                        # 安装完整版 dnsmasq（SSR Plus 必需）

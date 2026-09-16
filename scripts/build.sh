@@ -65,6 +65,7 @@ BIN_DIR="${WORKSPACE_ROOT}/bin"
 CONFIG_DIR="${WORKSPACE_ROOT}/config"
 FILES_DIR="${WORKSPACE_ROOT}/files"
 HELLOWORLD_OUTPUT_DIR="${WORK_DIR}/helloworld-packages-${OPENWRT_VERSION}"
+HELLOWORLD_COMPONENT="${WORKSPACE_ROOT}/components/helloworld-builder/build.sh"
 FULLCONE_OUTPUT_DIR="${WORK_DIR}/fullcone-packages-${OPENWRT_VERSION}"
 LUCI_FULLCONE_OUTPUT_DIR="${WORK_DIR}/luci-fullcone-packages-${OPENWRT_VERSION}"
 
@@ -145,12 +146,16 @@ fi
 
 # 3. 按 fw876/helloworld 官方 CI 流程编译 SSR Plus APK
 echo "==> 开始源码编译 SSR Plus 官方 APK 列表..."
+[ -x "${HELLOWORLD_COMPONENT}" ] || {
+    echo "❌ 错误: 缺少 helloworld-builder 组件入口: ${HELLOWORLD_COMPONENT}" >&2
+    exit 1
+}
 OPENWRT_VERSION="${OPENWRT_VERSION}" \
 WORK_DIR="${WORK_DIR}" \
 OUTPUT_DIR="${HELLOWORLD_OUTPUT_DIR}" \
 ARCH="${ARCH}" \
 GO_FEED_BRANCH="${GO_FEED_BRANCH:-master}" \
-"${SCRIPT_DIR}/build-helloworld.sh"
+"${HELLOWORLD_COMPONENT}"
 
 # 4. 使用同一个官方 SDK 编译 ImmortalWrt nftables FullCone 调用链
 echo "==> 开始源码编译 FullCone APK 调用链..."
