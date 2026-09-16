@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# 清理 WSL2 环境下从 Windows 继承的含空格或特殊字符 PATH (防止构建及 shell 解析报错)
+CLEAN_PATH=""
+IFS=':' read -ra ADDR <<< "$PATH"
+for p in "${ADDR[@]}"; do
+    case "$p" in
+        /mnt/*|*" "*|*"("*|*")"*) continue ;;
+        *) CLEAN_PATH="${CLEAN_PATH:+${CLEAN_PATH}:}$p" ;;
+    esac
+done
+export PATH="$CLEAN_PATH"
+
 # FullCone builder component interface v1. It applies the smallest ImmortalWrt
 # UI delta to the latest official LuCI stable feed revision matching the OpenWrt
 # release series and rebuilds it in the SDK matching the final firmware.
@@ -12,6 +23,10 @@ ARCH="${ARCH:-x86-64}"
 SDK_ARCH="${SDK_ARCH:-x86_64}"
 TARGET_PATH="${TARGET_PATH:-x86/64}"
 JOBS="${JOBS:-$(nproc)}"
+
+mkdir -p "${WORK_DIR}" "${OUTPUT_DIR}"
+WORK_DIR="$(cd "${WORK_DIR}" && pwd)"
+OUTPUT_DIR="$(cd "${OUTPUT_DIR}" && pwd)"
 
 readonly TARGET_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${TARGET_PATH}"
 readonly IMMORTALWRT_LUCI_COMMIT="d6167ea0645cbd1327708d85f94824f42d0eb872"
@@ -77,6 +92,7 @@ SDK_DIR="${SDK_DIR:-}"
 
 if [ -n "${SDK_DIR}" ] && [ -f "${SDK_DIR}/Makefile" ]; then
     sdk_dir="${SDK_DIR}"
+    sdk_dir="$(cd "${sdk_dir}" && pwd)"
     sdk_tarball="external-sdk"
     expected_sha256="external-sdk"
     echo "==> 使用显式指定的 SDK 目录: ${sdk_dir}"
