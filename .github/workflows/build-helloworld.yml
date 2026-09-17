@@ -25,7 +25,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -65,44 +65,18 @@ jobs:
             zstd \
             python3
 
-      - name: 解析 OpenWrt 版本与上游最新 Commit
+      - name: 解析 OpenWrt 版本
         id: meta
         env:
           REQUESTED_VERSION: ${{ inputs.openwrt_version || github.event.inputs.openwrt_version || 'latest' }}
-          FORCE_REBUILD: ${{ inputs.force_rebuild == true || github.event.inputs.force_rebuild == 'true' || github.event.inputs.force_rebuild == true }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x scripts/*.sh
           version="$(./scripts/resolve-version.sh "${REQUESTED_VERSION}")"
           echo "OPENWRT_VERSION=${version}" >> $GITHUB_ENV
           echo "version=${version}" >> $GITHUB_OUTPUT
-
-          # 获取 upstream helloworld HEAD commit
-          upstream_commit="$(git ls-remote https://github.com/fw876/helloworld.git refs/heads/master 2>/dev/null | awk '{print $1}')"
-          echo "upstream_commit=${upstream_commit}" >> $GITHUB_OUTPUT
-
-          tag_name="component-helloworld-${version}"
-          echo "tag_name=${tag_name}" >> $GITHUB_OUTPUT
-
-          should_build="true"
-          if [ "${FORCE_REBUILD}" = "true" ]; then
-            echo "==> Daily/forced rebuild requested: bypassing existing component cache/release skip logic"
-          else
-            if gh release view "${tag_name}" --json assets 2>/dev/null | grep -q "openwrt-component-helloworld-${version}-x86_64.tar.gz"; then
-              mkdir -p /tmp/check_rel
-              if gh release download "${tag_name}" --pattern "BUILD-INFO.txt" --dir /tmp/check_rel 2>/dev/null; then
-                existing_commit="$(awk -F': ' '$1 == "helloworld commit" {print $2; exit}' /tmp/check_rel/BUILD-INFO.txt)"
-                if [ -n "${existing_commit}" ] && [ "${existing_commit}" = "${upstream_commit}" ]; then
-                  echo "==> 预编译组件已有且上游 commit (${existing_commit}) 未变化，跳过重新编译。"
-                  should_build="false"
-                fi
-              fi
-            fi
-          fi
-          echo "should_build=${should_build}" >> $GITHUB_OUTPUT
+          echo "==> 锁定的 OpenWrt 版本: ${version}"
 
       - name: 缓存官方构建工具与源码下载
-        if: steps.meta.outputs.should_build == 'true'
         uses: actions/cache@v5
         with:
           path: |
@@ -114,7 +88,6 @@ jobs:
             openwrt-sdk-x86_64-${{ steps.meta.outputs.version }}-
 
       - name: 准备官方 SDK 环境并校验 Checksum
-        if: steps.meta.outputs.should_build == 'true'
         id: sdk_setup
         env:
           CUSTOM_SIGNING_KEY: ${{ secrets.CUSTOM_SIGNING_KEY }}
@@ -129,7 +102,6 @@ jobs:
           echo "SDK_DIR=${sdk_dir}" >> $GITHUB_ENV
 
       - name: 编译 helloworld 组件
-        if: steps.meta.outputs.should_build == 'true'
         id: build_step
         run: |
           mkdir -p .work
@@ -143,7 +115,6 @@ jobs:
           echo "output_dir=${OUTPUT_DIR}" >> $GITHUB_OUTPUT
 
       - name: 验证 helloworld 组件产物与元数据 (Hard Validation)
-        if: steps.meta.outputs.should_build == 'true'
         run: |
           output_dir="${{ steps.build_step.outputs.output_dir }}"
           echo "==> 验证 helloworld 构建目录: ${output_dir}"
@@ -190,7 +161,6 @@ jobs:
           echo "✓ helloworld 组件 Hard Validation 校验通过。"
 
       - name: 打包预编译组件产物
-        if: steps.meta.outputs.should_build == 'true'
         id: package_step
         run: |
           output_dir="${{ steps.build_step.outputs.output_dir }}"
@@ -199,53 +169,8 @@ jobs:
           echo "archive_path=${COMPONENT_ARCHIVE}" >> $GITHUB_OUTPUT
 
       - name: 上传构建产物至 Actions Artifacts
-        if: steps.meta.outputs.should_build == 'true'
         uses: actions/upload-artifact@v6
         with:
           name: helloworld-component-${{ steps.meta.outputs.version }}
-          path: |
-            ${{ steps.build_step.outputs.output_dir }}/*
-            ${{ steps.package_step.outputs.archive_path }}
-          retention-days: 30
-
-      - name: 发布至 GitHub Releases
-        if: steps.meta.outputs.should_build == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.meta.outputs.tag_name }}
-          name: OpenWrt ${{ steps.meta.outputs.version }} helloworld 预编译组件 (SSR Plus / Xray / Mihomo)
-          draft: false
-          prerelease: false
-          overwrite_files: true
-          files: |
-            ${{ steps.package_step.outputs.archive_path }}
-            ${{ steps.build_step.outputs.output_dir }}/*.apk
-            ${{ steps.build_step.outputs.output_dir }}/SHA256SUMS
-            ${{ steps.build_step.outputs.output_dir }}/BUILD-INFO.txt
-            ${{ steps.build_step.outputs.output_dir }}/repository-packages.txt
-            ${{ steps.build_step.outputs.output_dir }}/install-packages.txt
-            ${{ steps.build_step.outputs.output_dir }}/install-constraints.txt
-            ${{ steps.build_step.outputs.output_dir }}/helloworld-public-key.pem
-          body: |
-            ## 📦 OpenWrt ${{ steps.meta.outputs.version }} helloworld 预编译组件
-
-            本项目专用的 SSR Plus / Xray / Mihomo 预编译套件，基于 OpenWrt 官方完全同版 SDK 构建。
-
-            ### 📋 构建与环境信息
-            - **目标 OpenWrt 版本**：`${{ steps.meta.outputs.version }}`
-            - **适用架构**：`x86_64`
-            - **上游源码仓库**：[`fw876/helloworld`](https://github.com/fw876/helloworld)
-            - **上游 Commit**：`${{ steps.meta.outputs.upstream_commit }}`
-            - **构建工具链**：官方同版 OpenWrt SDK (`gcc-14.3.0` / `musl`)
-
-            ### 🧩 包含软件包清单 (APKs)
-            - `luci-app-ssr-plus`：SSR Plus 主程序控制台
-            - `luci-i18n-ssr-plus-zh-cn`：SSR Plus 简体中文语言包
-            - `xray-core`：Xray 核心模块
-            - `mihomo`：Mihomo (Clash.Meta) 核心模块
-            - `dns2tcp`、`ipt2socks`、`lua-neturl`：网络转发与 Lua 辅助支持库
-
-            > 💡 **集成说明**：
-            > 1. 本组件包已剔除 `naiveproxy`；
-            > 2. `v2ray-geoip` 与 `v2ray-geosite` 规则数据包在装配时由同版官方源提供，以保证数据最新；
-            > 3. 固件装配流水线通过 `@custom` 本地签名仓库无缝集成以上产物。
+          path: ${{ steps.package_step.outputs.archive_path }}
+          retention-days: 1

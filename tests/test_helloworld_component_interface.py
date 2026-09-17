@@ -56,7 +56,9 @@ class HelloworldComponentInterfaceTests(unittest.TestCase):
         self.assertTrue(workflow_file.is_file())
         workflow_content = workflow_file.read_text()
         self.assertIn("./components/helloworld-builder/build.sh", workflow_content)
-        self.assertIn("component-helloworld-", workflow_content)
+        self.assertIn("openwrt-component-helloworld-", workflow_content)
+        self.assertIn("helloworld-component-", workflow_content)
+        self.assertNotIn("tag_name=", workflow_content)
         self.assertIn("resolve-version.sh", workflow_content)
 
     def test_helloworld_workflow_prepares_sdk_and_validates_outputs(self):

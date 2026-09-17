@@ -116,8 +116,12 @@ class FirmwareCIWorkflowAssemblyOnlyTests(unittest.TestCase):
     def test_workflow_downloads_matching_components_with_fail_fast(self):
         self.assertIn("openwrt-component-helloworld-${OPENWRT_VERSION}-x86_64.tar.gz", self.workflow_content)
         self.assertIn("openwrt-component-fullcone-${OPENWRT_VERSION}-x86_64.tar.gz", self.workflow_content)
-        self.assertIn("component-helloworld-${OPENWRT_VERSION}", self.workflow_content)
-        self.assertIn("component-fullcone-${OPENWRT_VERSION}", self.workflow_content)
+        self.assertIn("helloworld-component-${OPENWRT_VERSION}", self.workflow_content)
+        self.assertIn("fullcone-component-${OPENWRT_VERSION}", self.workflow_content)
+        self.assertNotIn("gh release download", self.workflow_content)
+        self.assertIn('gh run download "${GITHUB_RUN_ID}"', self.workflow_content)
+        self.assertNotIn('"component-helloworld-${OPENWRT_VERSION}"', self.workflow_content)
+        self.assertNotIn('"component-fullcone-${OPENWRT_VERSION}"', self.workflow_content)
         self.assertIn("严禁降级混拼旧版本或回退编译", self.workflow_content)
 
 

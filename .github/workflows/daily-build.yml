@@ -59,7 +59,6 @@ jobs:
     uses: ./.github/workflows/build-helloworld.yml
     with:
       openwrt_version: ${{ needs.resolve-version.outputs.version }}
-      force_rebuild: true
     secrets: inherit
 
   fullcone:
@@ -68,7 +67,6 @@ jobs:
     uses: ./.github/workflows/build-fullcone.yml
     with:
       openwrt_version: ${{ needs.resolve-version.outputs.version }}
-      force_rebuild: true
     secrets: inherit
 
   firmware:
@@ -118,29 +116,27 @@ jobs:
         id: components
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
           mkdir -p .work /tmp/component-dl
 
           download_component() {
-            local tag="$1"
-            local asset="$2"
-            local artifact_name="$3"
-            local dest_dir="$4"
-            local tmp_dir="/tmp/component-dl/${tag}"
+            local asset="$1"
+            local artifact_name="$2"
+            local dest_dir="$3"
+            local tmp_dir="/tmp/component-dl/${artifact_name}"
             mkdir -p "${tmp_dir}" "${dest_dir}"
 
-            echo "==> 正在获取预编译组件 [${tag}] (${asset})..."
-            local downloaded="false"
-            if gh release download "${tag}" --pattern "${asset}" --dir "${tmp_dir}" 2>/dev/null; then
-              downloaded="true"
-            elif gh run download --name "${artifact_name}" --dir "${tmp_dir}" 2>/dev/null; then
-              downloaded="true"
+            echo "==> 正在从当前 Workflow Run (${GITHUB_RUN_ID}) Actions Artifact 获取组件 [${artifact_name}] (${asset})..."
+            if ! gh run download "${GITHUB_RUN_ID}" --name "${artifact_name}" --dir "${tmp_dir}" 2>/dev/null; then
+              echo "❌ 致命错误: 从当前 Run (${GITHUB_RUN_ID}) 的 Actions Artifact 下载组件 [${artifact_name}] 失败" >&2
+              echo "❌ 固件流水线为纯装配架构，严禁降级混拼旧版本或回退编译。必须严格依赖本轮组件编译产物！" >&2
+              exit 1
             fi
 
-            if [ "${downloaded}" != "true" ] || [ ! -f "${tmp_dir}/${asset}" ]; then
-              echo "❌ 致命错误: 未找到与 OpenWrt ${OPENWRT_VERSION} 严格匹配的预编译组件产物: ${asset}" >&2
-              echo "❌ 对应 Release 标签: ${tag} 或 Actions Artifact: ${artifact_name}" >&2
-              echo "❌ 固件流水线为纯装配架构，严禁降级混拼旧版本或回退编译。请先成功运行对应组件预编译 CI！" >&2
+            if [ ! -f "${tmp_dir}/${asset}" ]; then
+              echo "❌ 致命错误: 未在 Artifact [${artifact_name}] 中找到与 OpenWrt ${OPENWRT_VERSION} 严格匹配的组件产物: ${asset}" >&2
+              echo "❌ 固件流水线为纯装配架构，严禁降级混拼旧版本或回退编译。请确认对应组件预编译 CI 成功生成归档！" >&2
               exit 1
             fi
 
@@ -153,7 +149,6 @@ jobs:
           HW_DIR=".work/helloworld-component"
           rm -rf "${HW_DIR}"
           download_component \
-            "component-helloworld-${OPENWRT_VERSION}" \
             "openwrt-component-helloworld-${OPENWRT_VERSION}-x86_64.tar.gz" \
             "helloworld-component-${OPENWRT_VERSION}" \
             "${HW_DIR}"
@@ -162,7 +157,6 @@ jobs:
           FC_DIR=".work/fullcone-component"
           rm -rf "${FC_DIR}"
           download_component \
-            "component-fullcone-${OPENWRT_VERSION}" \
             "openwrt-component-fullcone-${OPENWRT_VERSION}-x86_64.tar.gz" \
             "fullcone-component-${OPENWRT_VERSION}" \
             "${FC_DIR}"

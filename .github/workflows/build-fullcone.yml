@@ -25,7 +25,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -65,55 +65,18 @@ jobs:
             zstd \
             python3
 
-      - name: 解析 OpenWrt 版本与上游最新 Commit
+      - name: 解析 OpenWrt 版本
         id: meta
         env:
           REQUESTED_VERSION: ${{ inputs.openwrt_version || github.event.inputs.openwrt_version || 'latest' }}
-          FORCE_REBUILD: ${{ inputs.force_rebuild == true || github.event.inputs.force_rebuild == 'true' || github.event.inputs.force_rebuild == true }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           chmod +x scripts/*.sh
           version="$(./scripts/resolve-version.sh "${REQUESTED_VERSION}")"
           echo "OPENWRT_VERSION=${version}" >> $GITHUB_ENV
           echo "version=${version}" >> $GITHUB_OUTPUT
-
-          # 获取 upstream ImmortalWrt HEAD commit
-          immortalwrt_commit="$(git ls-remote https://github.com/immortalwrt/immortalwrt.git refs/heads/master 2>/dev/null | awk '{print $1}')"
-          echo "immortalwrt_commit=${immortalwrt_commit}" >> $GITHUB_OUTPUT
-
-          # 获取 upstream 官方 LuCI stable branch commit
-          version_series="$(echo "${version}" | cut -d. -f1-2)"
-          luci_branch="openwrt-${version_series}"
-          luci_commit="$(git ls-remote https://github.com/openwrt/luci.git "refs/heads/${luci_branch}" 2>/dev/null | awk '{print $1}')"
-          if [ -z "${luci_commit}" ]; then
-            luci_commit="$(git ls-remote https://git.openwrt.org/project/luci.git "refs/heads/${luci_branch}" 2>/dev/null | awk '{print $1}')"
-          fi
-          echo "luci_commit=${luci_commit}" >> $GITHUB_OUTPUT
-
-          tag_name="component-fullcone-${version}"
-          echo "tag_name=${tag_name}" >> $GITHUB_OUTPUT
-
-          should_build="true"
-          if [ "${FORCE_REBUILD}" = "true" ]; then
-            echo "==> Daily/forced rebuild requested: bypassing existing component cache/release skip logic"
-          else
-            if gh release view "${tag_name}" --json assets 2>/dev/null | grep -q "openwrt-component-fullcone-${version}-x86_64.tar.gz"; then
-              mkdir -p /tmp/check_rel_fc
-              if gh release download "${tag_name}" --pattern "*BUILD-INFO.txt" --dir /tmp/check_rel_fc 2>/dev/null; then
-                existing_donor="$(awk -F': ' '$1 ~ /ImmortalWrt (donor|source) commit/ {print $2; exit}' /tmp/check_rel_fc/* 2>/dev/null || true)"
-                existing_luci="$(awk -F': ' '$1 == "LuCI commit SHA" {print $2; exit}' /tmp/check_rel_fc/* 2>/dev/null || true)"
-                if [ -n "${existing_donor}" ] && [ "${existing_donor}" = "${immortalwrt_commit}" ] && \
-                   [ -n "${existing_luci}" ] && [ "${existing_luci}" = "${luci_commit}" ]; then
-                  echo "==> 预编译 FullCone 组件已有且上游 ImmortalWrt (${existing_donor}) 与 LuCI (${existing_luci}) commit 均未变化，跳过重新编译。"
-                  should_build="false"
-                fi
-              fi
-            fi
-          fi
-          echo "should_build=${should_build}" >> $GITHUB_OUTPUT
+          echo "==> 锁定的 OpenWrt 版本: ${version}"
 
       - name: 缓存官方构建工具与源码下载
-        if: steps.meta.outputs.should_build == 'true'
         uses: actions/cache@v5
         with:
           path: |
@@ -126,7 +89,6 @@ jobs:
             openwrt-sdk-fullcone-x86_64-${{ steps.meta.outputs.version }}-
 
       - name: 准备官方 SDK 环境并校验 Checksum
-        if: steps.meta.outputs.should_build == 'true'
         id: sdk_setup
         env:
           CUSTOM_SIGNING_KEY: ${{ secrets.CUSTOM_SIGNING_KEY }}
@@ -141,7 +103,6 @@ jobs:
           echo "SDK_DIR=${sdk_dir}" >> $GITHUB_ENV
 
       - name: 编译 FullCone 组件 (Runtime + LuCI)
-        if: steps.meta.outputs.should_build == 'true'
         id: build_step
         run: |
           mkdir -p .work
@@ -172,23 +133,9 @@ jobs:
             exit 1
           }
 
-          # 准备 GitHub Release 扁平资源副本，确保两份元数据不覆盖
-          mkdir -p "${OUTPUT_BASE}/release-assets"
-          cp "${RUNTIME_OUTPUT_DIR}/BUILD-INFO.txt" "${OUTPUT_BASE}/release-assets/fullcone-runtime-BUILD-INFO.txt"
-          cp "${LUCI_OUTPUT_DIR}/BUILD-INFO.txt" "${OUTPUT_BASE}/release-assets/fullcone-luci-BUILD-INFO.txt"
-          cp "${RUNTIME_OUTPUT_DIR}/SHA256SUMS" "${OUTPUT_BASE}/release-assets/fullcone-runtime-SHA256SUMS"
-          cp "${LUCI_OUTPUT_DIR}/SHA256SUMS" "${OUTPUT_BASE}/release-assets/fullcone-luci-SHA256SUMS"
-          cp "${RUNTIME_OUTPUT_DIR}/repository-packages.txt" "${OUTPUT_BASE}/release-assets/fullcone-runtime-repository-packages.txt"
-          cp "${LUCI_OUTPUT_DIR}/repository-packages.txt" "${OUTPUT_BASE}/release-assets/fullcone-luci-repository-packages.txt"
-          cp "${RUNTIME_OUTPUT_DIR}/install-packages.txt" "${OUTPUT_BASE}/release-assets/fullcone-runtime-install-packages.txt"
-          cp "${LUCI_OUTPUT_DIR}/install-packages.txt" "${OUTPUT_BASE}/release-assets/fullcone-luci-install-packages.txt"
-          cp "${RUNTIME_OUTPUT_DIR}/install-constraints.txt" "${OUTPUT_BASE}/release-assets/fullcone-runtime-install-constraints.txt"
-          cp "${LUCI_OUTPUT_DIR}/install-constraints.txt" "${OUTPUT_BASE}/release-assets/fullcone-luci-install-constraints.txt"
-
           echo "output_dir=${OUTPUT_BASE}" >> $GITHUB_OUTPUT
 
       - name: 验证 FullCone 组件产物与元数据 (Hard Validation)
-        if: steps.meta.outputs.should_build == 'true'
         run: |
           output_dir="${{ steps.build_step.outputs.output_dir }}"
           echo "==> 验证 FullCone 构建产物目录: ${output_dir}"
@@ -257,7 +204,6 @@ jobs:
           echo "✓ FullCone runtime (4 APK) 与 luci (3 APK) 全部 Hard Validation 校验通过，无元数据覆盖风险。"
 
       - name: 打包预编译组件产物
-        if: steps.meta.outputs.should_build == 'true'
         id: package_step
         run: |
           output_dir="${{ steps.build_step.outputs.output_dir }}"
@@ -266,58 +212,8 @@ jobs:
           echo "archive_path=${COMPONENT_ARCHIVE}" >> $GITHUB_OUTPUT
 
       - name: 上传构建产物至 Actions Artifacts
-        if: steps.meta.outputs.should_build == 'true'
         uses: actions/upload-artifact@v6
         with:
           name: fullcone-component-${{ steps.meta.outputs.version }}
-          path: |
-            ${{ steps.build_step.outputs.output_dir }}/runtime/**
-            ${{ steps.build_step.outputs.output_dir }}/luci/**
-            ${{ steps.package_step.outputs.archive_path }}
-          retention-days: 30
-
-      - name: 发布至 GitHub Releases
-        if: steps.meta.outputs.should_build == 'true'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.meta.outputs.tag_name }}
-          name: OpenWrt ${{ steps.meta.outputs.version }} FullCone 预编译组件 (Runtime + LuCI)
-          draft: false
-          prerelease: false
-          overwrite_files: true
-          files: |
-            ${{ steps.package_step.outputs.archive_path }}
-            ${{ steps.build_step.outputs.output_dir }}/runtime/*.apk
-            ${{ steps.build_step.outputs.output_dir }}/luci/*.apk
-            ${{ steps.build_step.outputs.output_dir }}/runtime/kernel-dependency.txt
-            ${{ steps.build_step.outputs.output_dir }}/runtime/fullcone-public-key.pem
-            ${{ steps.build_step.outputs.output_dir }}/luci/luci-fullcone-public-key.pem
-            ${{ steps.build_step.outputs.output_dir }}/release-assets/*
-          body: |
-            ## 🔄 OpenWrt ${{ steps.meta.outputs.version }} FullCone 预编译组件
-
-            本项目专用的 FullCone NAT 预编译套件，包含完整的底层运行时（Runtime）与 Web 管理控制台（LuCI），与官方发行版内核 ABI 严格匹配。
-
-            ### 📋 构建与环境信息
-            - **目标 OpenWrt 版本**：`${{ steps.meta.outputs.version }}`
-            - **适用架构**：`x86_64`
-            - **供体源码 (ImmortalWrt Commit)**：`${{ steps.meta.outputs.immortalwrt_commit }}`
-            - **LuCI 源码 (LuCI Commit)**：`${{ steps.meta.outputs.luci_commit }}`
-            - **构建工具链**：官方同版 OpenWrt SDK (`gcc-14.3.0` / `musl`)
-
-            ### 🧩 包含软件包清单 (APKs)
-            #### 1. 运行时组件 (Runtime)
-            - `kmod-nft-fullcone`：匹配官方内核 ABI 的 nftables FullCone 内核模块
-            - `libnftnl11`：支持 fullcone expression 的底层 netlink 库
-            - `nftables-json`：支持 fullcone 规则语法的用户态规则管理工具
-            - `firewall4`：支持 FullCone 规则注入与运行时探测的防火墙组件
-
-            #### 2. 控制台组件 (LuCI)
-            - `luci-app-firewall`：带 FullCone 开关控制的防火墙界面
-            - `luci-i18n-firewall-zh-cn`：防火墙控制台简体中文语言包（集成 FullCone 汉化）
-            - `luci-base`：配套构建的 LuCI 基础支持库
-
-            > 🛡️ **安全与质量保证**：
-            > 1. **内核 ABI 严格对齐**：严禁 `--force-depends`，内核模块依赖与官方目标内核完全吻合；
-            > 2. **硬核质量验收**：已静态校验 elf 符号、grammar/lexer 解析器及 ucode 规则生成模板；
-            > 3. **内置自检命令**：刷机后可在终端运行 `/usr/sbin/fullcone-check [syntax|status|restart|luci]` 一键核验状态。
+          path: ${{ steps.package_step.outputs.archive_path }}
+          retention-days: 1
