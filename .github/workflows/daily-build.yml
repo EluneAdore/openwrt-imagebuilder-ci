@@ -2,8 +2,8 @@ name: 每日自动构建 OpenWrt 固件
 
 on:
   schedule:
-    # 每天北京时间上午 10:00 (UTC 02:00) 自动触发全链路构建
-    - cron: '0 2 * * *'
+    # 每天北京时间晚上 21:11 (UTC 13:11) 自动触发全链路构建
+    - cron: '11 13 * * *'
   workflow_dispatch:
     inputs:
       openwrt_version:

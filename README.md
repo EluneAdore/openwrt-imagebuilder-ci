@@ -39,7 +39,7 @@
 
 ```mermaid
 flowchart TD
-    schedule["每日定时 (02:00 UTC / 北京 10:00)"] --> resolve["Job: resolve-version<br/>(仅探测并锁定一次官方稳定版本，如 25.12.5)"]
+    schedule["每日定时 (13:11 UTC / 北京 21:11)"] --> resolve["Job: resolve-version<br/>(仅探测并锁定一次官方稳定版本，如 25.12.5)"]
     dispatch["手动触发 (workflow_dispatch)"] --> resolve
 
     resolve --> helloworld["Job: helloworld (Reusable)<br/>with: openwrt_version, force_rebuild=true<br/>(预编译 SSR Plus / Xray / Mihomo 并更新 Release)"]
@@ -58,7 +58,7 @@ flowchart TD
 
 | 工作流入口 | 文件路径 | 触发方式 | 功能与特性 |
 | :--- | :--- | :--- | :--- |
-| **每日自动构建 OpenWrt 固件** | [daily-build.yml](.github/workflows/daily-build.yml) | 定时任务 (`0 2 * * *`)<br>手动触发 (`workflow_dispatch`) | **全链路主流水线**：单次解析版本 → 并行强制重编两大组件 → 阻断等待成功 → 零编译纯装配固件并上传 Artifacts。具备 `concurrency` 队列保护，绝不中断正在进行的构建。 |
+| **每日自动构建 OpenWrt 固件** | [daily-build.yml](.github/workflows/daily-build.yml) | 定时任务 (`11 13 * * *`)<br>手动触发 (`workflow_dispatch`) | **全链路主流水线**：单次解析版本 → 并行强制重编两大组件 → 阻断等待成功 → 零编译纯装配固件并上传 Artifacts。具备 `concurrency` 队列保护，绝不中断正在进行的构建。 |
 | **构建 helloworld 预编译组件** | [build-helloworld.yml](.github/workflows/build-helloworld.yml) | 可复用调用 (`workflow_call`)<br>独立手动 (`workflow_dispatch`) | 独立预编译并发布 SSR Plus 产物包。支持 `force_rebuild` 参数（日常编排强制重编以吸收 packages feed 每日增量，独立手动支持缓存跳过优化）。 |
 | **构建 FullCone 预编译组件** | [build-fullcone.yml](.github/workflows/build-fullcone.yml) | 可复用调用 (`workflow_call`)<br>独立手动 (`workflow_dispatch`) | 独立预编译并发布 FullCone runtime 及 LuCI 产物包。同样支持 `force_rebuild` 参数及完整性校验。 |
 
@@ -98,7 +98,7 @@ flowchart TD
 
 ### 1. 云端构建 (GitHub Actions)
 
-- **每日全自动编排**：每天**北京时间上午 10:00**（即 `02:00 UTC`）由主流水线自动触发，执行版本锁定、组件并发强制重编与固件纯装配。构建产物默认保存于 GitHub Actions Artifacts 中（保留 30 天），**默认不发布 Release**，避免日常构建污染 Release 页面。
+- **每日全自动编排**：每天**北京时间晚上 21:11**（即 `13:11 UTC`）由主流水线自动触发，执行版本锁定、组件并发强制重编与固件纯装配。构建产物默认保存于 GitHub Actions Artifacts 中（保留 30 天），**默认不发布 Release**，避免日常构建污染 Release 页面。
 - **纯净提交策略**：代码推送 (Push) 不触发任何构建，杜绝 Actions 额度浪费。
 - **手动触发构建**：
   - **构建完整固件**：在 Actions -> **每日自动构建 OpenWrt 固件** 中点击 **Run workflow**：
