@@ -112,54 +112,54 @@ jobs:
           restore-keys: |
             openwrt-imagebuilder-${{ steps.version.outputs.version }}-
 
-      - name: 获取预编译组件产物 (Fail-Fast)
+      - name: 下载 helloworld 预编译组件 Artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: helloworld-component-${{ needs.resolve-version.outputs.version }}
+          path: .work/artifacts/helloworld
+
+      - name: 下载 FullCone 预编译组件 Artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: fullcone-component-${{ needs.resolve-version.outputs.version }}
+          path: .work/artifacts/fullcone
+
+      - name: 解压并严格校验预编译组件产物 (Fail-Fast)
         id: components
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
         run: |
-          mkdir -p .work /tmp/component-dl
+          mkdir -p .work
 
-          download_component() {
-            local asset="$1"
-            local artifact_name="$2"
-            local dest_dir="$3"
-            local tmp_dir="/tmp/component-dl/${artifact_name}"
-            mkdir -p "${tmp_dir}" "${dest_dir}"
-
-            echo "==> 正在从当前 Workflow Run (${GITHUB_RUN_ID}) Actions Artifact 获取组件 [${artifact_name}] (${asset})..."
-            if ! gh run download "${GITHUB_RUN_ID}" --name "${artifact_name}" --dir "${tmp_dir}" 2>/dev/null; then
-              echo "❌ 致命错误: 从当前 Run (${GITHUB_RUN_ID}) 的 Actions Artifact 下载组件 [${artifact_name}] 失败" >&2
-              echo "❌ 固件流水线为纯装配架构，严禁降级混拼旧版本或回退编译。必须严格依赖本轮组件编译产物！" >&2
-              exit 1
-            fi
-
-            if [ ! -f "${tmp_dir}/${asset}" ]; then
-              echo "❌ 致命错误: 未在 Artifact [${artifact_name}] 中找到与 OpenWrt ${OPENWRT_VERSION} 严格匹配的组件产物: ${asset}" >&2
-              echo "❌ 固件流水线为纯装配架构，严禁降级混拼旧版本或回退编译。请确认对应组件预编译 CI 成功生成归档！" >&2
-              exit 1
-            fi
-
-            tar -xzf "${tmp_dir}/${asset}" -C "${dest_dir}"
-            rm -rf "${tmp_dir}"
-            echo "✓ 成功解压 ${asset} 到 ${dest_dir}"
-          }
-
-          # 1. 获取 helloworld 预编译组件
+          # 1. 严格检查并解压 helloworld 组件
+          HW_ARTIFACT_DIR=".work/artifacts/helloworld"
+          HW_ARCHIVE="${HW_ARTIFACT_DIR}/openwrt-component-helloworld-${OPENWRT_VERSION}-x86_64.tar.gz"
           HW_DIR=".work/helloworld-component"
-          rm -rf "${HW_DIR}"
-          download_component \
-            "openwrt-component-helloworld-${OPENWRT_VERSION}-x86_64.tar.gz" \
-            "helloworld-component-${OPENWRT_VERSION}" \
-            "${HW_DIR}"
 
-          # 2. 获取 FullCone 预编译组件 (包含 runtime 与 luci 子目录)
+          if [ ! -f "${HW_ARCHIVE}" ]; then
+            echo "❌ 致命错误: 未在 Artifact 目录 (${HW_ARTIFACT_DIR}) 中找到组件归档: openwrt-component-helloworld-${OPENWRT_VERSION}-x86_64.tar.gz" >&2
+            echo "❌ 固件流水线为纯装配架构，严禁降级混拼旧版本或回退编译。请确认 helloworld 构建 CI 成功执行！" >&2
+            exit 1
+          fi
+
+          rm -rf "${HW_DIR}"
+          mkdir -p "${HW_DIR}"
+          tar -xzf "${HW_ARCHIVE}" -C "${HW_DIR}"
+          echo "✓ 成功解压 helloworld 组件到 ${HW_DIR}"
+
+          # 2. 严格检查并解压 FullCone 组件 (包含 runtime 与 luci 子目录)
+          FC_ARTIFACT_DIR=".work/artifacts/fullcone"
+          FC_ARCHIVE="${FC_ARTIFACT_DIR}/openwrt-component-fullcone-${OPENWRT_VERSION}-x86_64.tar.gz"
           FC_DIR=".work/fullcone-component"
+
+          if [ ! -f "${FC_ARCHIVE}" ]; then
+            echo "❌ 致命错误: 未在 Artifact 目录 (${FC_ARTIFACT_DIR}) 中找到组件归档: openwrt-component-fullcone-${OPENWRT_VERSION}-x86_64.tar.gz" >&2
+            echo "❌ 固件流水线为纯装配架构，严禁降级混拼旧版本或回退编译。请确认 FullCone 构建 CI 成功执行！" >&2
+            exit 1
+          fi
+
           rm -rf "${FC_DIR}"
-          download_component \
-            "openwrt-component-fullcone-${OPENWRT_VERSION}-x86_64.tar.gz" \
-            "fullcone-component-${OPENWRT_VERSION}" \
-            "${FC_DIR}"
+          mkdir -p "${FC_DIR}"
+          tar -xzf "${FC_ARCHIVE}" -C "${FC_DIR}"
+          echo "✓ 成功解压 FullCone 组件到 ${FC_DIR}"
 
           [ -d "${FC_DIR}/runtime" ] || {
             echo "❌ 致命错误: FullCone 组件解压产物中缺少 runtime 目录" >&2

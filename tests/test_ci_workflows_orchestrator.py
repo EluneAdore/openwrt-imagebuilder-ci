@@ -251,26 +251,32 @@ class CIWorkflowsOrchestratorTests(unittest.TestCase):
             self.assertNotIn("/**", raw_path)
 
     def test_firmware_depends_only_on_current_run_component_tar_gz_artifact(self):
-        # 验证 Firmware 装配流程严格只从当前 run Artifact 下载并解压最终 tar.gz 产物
+        # 验证 Firmware 装配流程严格只通过 actions/download-artifact 下载当前 run 产物并解压最终 tar.gz
         daily_path = WORKFLOWS_DIR / "daily-build.yml"
         content = daily_path.read_text(encoding="utf-8")
         fw_section = content.split("firmware:")[1]
 
-        # 验证从当前 GITHUB_RUN_ID 下载 Artifact
-        self.assertIn('gh run download "${GITHUB_RUN_ID}" --name "${artifact_name}" --dir "${tmp_dir}"', fw_section)
+        # 验证使用 actions/download-artifact 直接下载两个组件
+        self.assertIn("uses: actions/download-artifact@v6", fw_section)
+        self.assertIn("helloworld-component-${{ needs.resolve-version.outputs.version }}", fw_section)
+        self.assertIn("fullcone-component-${{ needs.resolve-version.outputs.version }}", fw_section)
+        self.assertIn("path: .work/artifacts/helloworld", fw_section)
+        self.assertIn("path: .work/artifacts/fullcone", fw_section)
 
-        # 验证绝对不从 GitHub Release 下载组件，且不包含独立的 component-* Release 标签参数
-        self.assertNotIn('gh release download', fw_section)
-        self.assertNotIn('"component-helloworld-${OPENWRT_VERSION}"', fw_section)
-        self.assertNotIn('"component-fullcone-${OPENWRT_VERSION}"', fw_section)
+        # 验证绝对不从 GitHub Release 下载组件，严禁 gh run download 与 gh release download
+        self.assertNotIn("gh run download", fw_section)
+        self.assertNotIn("gh release download", fw_section)
+        self.assertNotIn("GITHUB_RUN_ID", fw_section)
+        self.assertNotIn('"component-helloworld-', fw_section)
+        self.assertNotIn('"component-fullcone-', fw_section)
 
-        # 验证 download_component 函数仅解压 ${tmp_dir}/${asset} (即 tar.gz)
-        self.assertIn('tar -xzf "${tmp_dir}/${asset}" -C "${dest_dir}"', fw_section)
-        self.assertIn('rm -rf "${tmp_dir}"', fw_section)
+        # 验证解压并校验最终 tar.gz
+        self.assertIn('tar -xzf "${HW_ARCHIVE}" -C "${HW_DIR}"', fw_section)
+        self.assertIn('tar -xzf "${FC_ARCHIVE}" -C "${FC_DIR}"', fw_section)
 
         # 验证组件文件名
-        self.assertIn('"openwrt-component-helloworld-${OPENWRT_VERSION}-x86_64.tar.gz"', fw_section)
-        self.assertIn('"openwrt-component-fullcone-${OPENWRT_VERSION}-x86_64.tar.gz"', fw_section)
+        self.assertIn("openwrt-component-helloworld-${OPENWRT_VERSION}-x86_64.tar.gz", fw_section)
+        self.assertIn("openwrt-component-fullcone-${OPENWRT_VERSION}-x86_64.tar.gz", fw_section)
 
     def test_only_firmware_publishes_release_and_components_do_not(self):
         # 验证仅 firmware job 可以发布 GitHub Release，组件工作流绝对不发布 Release
@@ -303,9 +309,11 @@ class CIWorkflowsOrchestratorTests(unittest.TestCase):
         daily_releases = [s for s in jobs["firmware"]["steps"] if "action-gh-release" in s.get("uses", "")]
         self.assertEqual(len(daily_releases), 1)
 
-        # 2. Firmware 不从 Release 下载组件
+        # 2. Firmware 不从 Release 下载组件，严禁 gh run download 与 gh release download
         fw_section = daily_content.split("firmware:")[1]
         self.assertNotIn("gh release download", fw_section)
+        self.assertNotIn("gh run download", fw_section)
+        self.assertNotIn("GITHUB_RUN_ID", fw_section)
         self.assertNotIn('"component-helloworld-', fw_section)
         self.assertNotIn('"component-fullcone-', fw_section)
 
@@ -318,9 +326,15 @@ class CIWorkflowsOrchestratorTests(unittest.TestCase):
         self.assertEqual(jobs["helloworld"]["needs"], "resolve-version")
         self.assertEqual(jobs["fullcone"]["needs"], "resolve-version")
 
-        # 5. Firmware 只使用当前 run Artifact
-        self.assertIn('gh run download "${GITHUB_RUN_ID}"', fw_section)
-        self.assertIn('tar -xzf "${tmp_dir}/${asset}" -C "${dest_dir}"', fw_section)
+        # 5. Firmware 必须包含 actions/download-artifact，且两个 Artifact name 均来自同一个 resolve-version
+        fw_steps = jobs["firmware"]["steps"]
+        dl_steps = [s for s in fw_steps if "actions/download-artifact" in s.get("uses", "")]
+        self.assertEqual(len(dl_steps), 2, "Firmware 必须包含 2 个 actions/download-artifact 步骤")
+        dl_names = [s.get("with", {}).get("name") for s in dl_steps]
+        self.assertIn("helloworld-component-${{ needs.resolve-version.outputs.version }}", dl_names)
+        self.assertIn("fullcone-component-${{ needs.resolve-version.outputs.version }}", dl_names)
+        self.assertIn('tar -xzf "${HW_ARCHIVE}" -C "${HW_DIR}"', fw_section)
+        self.assertIn('tar -xzf "${FC_ARCHIVE}" -C "${FC_DIR}"', fw_section)
 
         # 6. upload-artifact 不包含 .work 或原始 APK / 解包目录，且 retention 为 1 天
         for c_content in (hw_content, fc_content):
