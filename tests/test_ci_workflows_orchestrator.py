@@ -51,7 +51,7 @@ class CIWorkflowsOrchestratorTests(unittest.TestCase):
         triggers = daily_data.get("on") or daily_data.get(True)
         self.assertIn("schedule", triggers)
         cron_expr = triggers["schedule"][0]["cron"]
-        self.assertEqual(cron_expr, "11 13 * * *")
+        self.assertEqual(cron_expr, "23 23 * * *")
 
         # 两个组件工作流绝对不得包含 schedule 触发器
         for name in ("build-helloworld.yml", "build-fullcone.yml"):
