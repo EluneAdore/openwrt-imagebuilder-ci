@@ -177,7 +177,7 @@ jobs:
       - name: 恢复历史 Manifest 清单缓存
         uses: actions/cache/restore@v5
         with:
-          path: /tmp/manifest_cache
+          path: .manifest-cache
           key: manifest-cache-x86_64-${{ github.run_id }}
           restore-keys: |
             manifest-cache-x86_64-
@@ -188,9 +188,9 @@ jobs:
           GRUB_TIMEOUT: ${{ github.event.inputs.grub_timeout || '0' }}
         run: |
           chmod +x scripts/*.sh scripts/*.py
-          mkdir -p .work
-          if [ -d /tmp/manifest_cache ] && compgen -G "/tmp/manifest_cache/*.manifest" > /dev/null; then
-            cp -f /tmp/manifest_cache/*.manifest .work/last-manifest.txt 2>/dev/null || true
+          mkdir -p .work .manifest-cache
+          if [ -f .manifest-cache/last.manifest ]; then
+            cp -f .manifest-cache/last.manifest .work/last-manifest.txt
           fi
 
           OPENWRT_VERSION="${OPENWRT_VERSION}" \
@@ -219,9 +219,9 @@ jobs:
           echo "actual_version=${ACTUAL_VERSION}" >> $GITHUB_OUTPUT
 
           # 更新清单缓存供下一次对比
-          mkdir -p /tmp/manifest_cache
-          rm -rf /tmp/manifest_cache/*
-          cp -f bin/*.manifest /tmp/manifest_cache/last.manifest 2>/dev/null || true
+          mkdir -p .manifest-cache
+          rm -rf .manifest-cache/*
+          cp -f bin/*.manifest .manifest-cache/last.manifest 2>/dev/null || true
 
           # 读取差分报告注入 Release 内容
           DIFF_CONTENT=""
@@ -236,9 +236,9 @@ jobs:
 
       - name: 保存本次 Manifest 清单缓存
         uses: actions/cache/save@v5
-        if: always()
+        if: success()
         with:
-          path: /tmp/manifest_cache
+          path: .manifest-cache
           key: manifest-cache-x86_64-${{ github.run_id }}
 
       - name: 上传构建产物至 Artifacts

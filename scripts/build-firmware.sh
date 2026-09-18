@@ -344,14 +344,14 @@ for f in "${OUTPUT_SOURCE_DIR}"/*"${IMAGES}"*; do
         mv -f "$f" "${OUTPUT_SOURCE_DIR}/${target_name}"
     fi
 done
-find "${OUTPUT_SOURCE_DIR}" -type f -name "*manifest*" -exec cp -f {} "${BIN_DIR}/" \;
+find "${OUTPUT_SOURCE_DIR}" -type f -name "*.manifest" -exec cp -f {} "${BIN_DIR}/" \;
 
 cd "${BIN_DIR}"
 echo "==> 正在生成 SHA256 校验和文件..."
 sha256sum ./*combined-efi*.img.gz > sha256sums 2>/dev/null || true
 cp -f sha256sums "${OUTPUT_SOURCE_DIR}/sha256sums" 2>/dev/null || true
 
-MANIFEST_FILE=$(find "${BIN_DIR}" -type f -name "*manifest*" | head -n 1)
+MANIFEST_FILE=$(find "${BIN_DIR}" -type f -name "*.manifest" | head -n 1)
 [ -n "${MANIFEST_FILE}" ] || die "未生成固件 Manifest"
 
 echo "==> 执行最终 Manifest 严格比对..."

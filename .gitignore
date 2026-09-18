@@ -4,6 +4,7 @@
 
 # 1. ImageBuilder 下载缓存与解压工作空间
 .work/
+.manifest-cache/
 
 # 2. 本地构建固件产物与分发归档目录
 bin/

@@ -29,7 +29,7 @@ def parse_manifest(filepath):
             if " - " in line:
                 parts = line.split(" - ", 1)
                 packages[parts[0].strip()] = parts[1].strip()
-            elif " " in line:
+            elif any(c.isspace() for c in line):
                 parts = line.split(None, 1)
                 packages[parts[0].strip()] = parts[1].strip()
     return packages
@@ -237,6 +237,9 @@ def main():
         prev_pkgs = {}
     else:
         prev_pkgs = parse_manifest(prev_path)
+        if not prev_pkgs:
+            is_first_run = True
+            prev_pkgs = {}
 
     added, removed, changed, unchanged = generate_diff(prev_pkgs, curr_pkgs)
 
