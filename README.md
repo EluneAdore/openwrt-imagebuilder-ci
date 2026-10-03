@@ -87,7 +87,6 @@ flowchart TD
 ├── components/
 │   ├── helloworld-builder/       # SSR Plus / Xray / Mihomo 预编译组件 (build.sh)
 │   └── fullcone-builder/         # FullCone runtime 与 LuCI 预编译组件 (build.sh, build-luci.sh)
-├── tests/                        # 契约测试、装配断言、Rootfs 校验与 YAML 语法测试套件
 ├── Makefile                      # 常用构建命令快捷入口
 └── README.md
 ```
