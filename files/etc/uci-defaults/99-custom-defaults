@@ -200,12 +200,5 @@ if ! grep -q "定时重启示例" /etc/crontabs/root 2>/dev/null; then
 CRON_EOF
 fi
 
-# ------------------------------------------------------------------------------
-# 8. 虚拟机增强服务管理 (QEMU Guest Agent)
-# ------------------------------------------------------------------------------
-if [ -f /etc/init.d/qemu-ga ]; then
-    /etc/init.d/qemu-ga enable || fail '无法启用 qemu-ga 服务'
-fi
-
 # /etc/init.d/boot 会在本脚本成功返回后统一执行 uci commit。
 true
