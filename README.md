@@ -191,20 +191,3 @@ fw4 print | grep -i fullcone
 # 查看 UCI 配置项
 uci get firewall.@defaults[0].fullcone
 ```
-
----
-
-## 🧪 静态测试与质量保证
-
-本项目配备了完整的自动化回归与契约测试套件（`tests/`），严把质量关：
-
-```bash
-# 运行全部 57 项单元测试与契约测试 (包含 DAG 依赖、零 SDK 纯装配断言、YAML 唯一键校验等)
-python3 -m unittest discover -s tests -v
-
-# 验证所有 Shell 脚本语法
-bash -n scripts/*.sh components/*/*.sh
-
-# 检查 Git 格式与空白
-git diff --check
-```
