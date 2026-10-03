@@ -35,7 +35,7 @@ permissions:
 jobs:
   resolve-version:
     name: 统一解析 OpenWrt 官方最新稳定版
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
       version: ${{ steps.resolve.outputs.version }}
@@ -75,7 +75,7 @@ jobs:
       - resolve-version
       - helloworld
       - fullcone
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - name: 检出代码仓库
@@ -113,13 +113,13 @@ jobs:
             openwrt-imagebuilder-${{ steps.version.outputs.version }}-
 
       - name: 下载 helloworld 预编译组件 Artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: helloworld-component-${{ needs.resolve-version.outputs.version }}
           path: .work/artifacts/helloworld
 
       - name: 下载 FullCone 预编译组件 Artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: fullcone-component-${{ needs.resolve-version.outputs.version }}
           path: .work/artifacts/fullcone

@@ -30,7 +30,7 @@ permissions:
 jobs:
   build:
     name: 编译 FullCone 组件 (x86_64)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 240
     steps:
       - name: 检出代码仓库
