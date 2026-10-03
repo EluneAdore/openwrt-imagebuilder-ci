@@ -275,7 +275,6 @@ jobs:
             * **集成特性**:
               - 🚀 全套 LuCI 简体中文界面，默认启用现代侧边栏主题 (`luci-theme-footstrap`)
               - 📶 硬件直通网卡驱动: Realtek 2.5G (`r8125-rss`), 万兆 (`r8127-rss`), Wi-Fi 6/6E (`mt7921e`, `mt7922`)
-              - 🖥️ 虚拟化来宾支持: `qemu-ga` (QEMU Guest Agent) 与 `open-vm-tools`
               - ⚡ 队列流控: SQM (带抗延迟 `CAKE` 算法)
               - 💻 网页终端: `ttyd`
               - 🌍 SSR Plus: 预编译组件集成 `luci-app-ssr-plus`、`xray-core`、`mihomo`
