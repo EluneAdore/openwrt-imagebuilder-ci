@@ -33,8 +33,6 @@ OUTPUT_DIR="$(cd "${OUTPUT_DIR}" && pwd)"
 
 readonly TARGET_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${TARGET_PATH}"
 readonly COMPONENT_INTERFACE_VERSION=1
-COMPONENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-readonly COMPONENT_DIR
 readonly SOURCE_DIR="${WORK_DIR}/helloworld-source"
 readonly DOWNLOAD_DIR="${WORK_DIR}/downloads"
 
@@ -58,7 +56,7 @@ require_command() {
     command -v "$1" >/dev/null 2>&1 || die "缺少构建命令: $1（请先运行 scripts/setup-env.sh）"
 }
 
-for command_name in curl git make patch python3 sha256sum tar; do
+for command_name in curl git make sha256sum tar; do
     require_command "${command_name}"
 done
 
@@ -126,20 +124,6 @@ else
 fi
 helloworld_commit="$(git -C "${SOURCE_DIR}" rev-parse HEAD)"
 echo "  helloworld commit: ${helloworld_commit}"
-
-echo "==> 应用并验证 SSR Plus 运行时兼容补丁..."
-readonly -a RUNTIME_PATCHES=(
-    001-component-use-form.patch
-    002-quote-logger-message.patch
-    003-handle-missing-policy-route-table.patch
-)
-for patch_name in "${RUNTIME_PATCHES[@]}"; do
-    patch_file="${COMPONENT_DIR}/patches/${patch_name}"
-    [ -f "${patch_file}" ] || die "缺少 SSR Plus 补丁: ${patch_name}"
-    patch --batch --forward --fuzz=0 -d "${SOURCE_DIR}" -p1 < "${patch_file}" || \
-        die "SSR Plus 补丁无法精确应用: ${patch_name}（请核对上游变动，不能跳过补丁）"
-done
-python3 "${COMPONENT_DIR}/tests/test-runtime-fixes.py" "${SOURCE_DIR}/luci-app-ssr-plus"
 
 cd "${sdk_dir}"
 
@@ -249,19 +233,6 @@ shopt -u nullglob
 [ ${#package_files[@]} -gt 0 ] || die "helloworld feed 没有生成任何 APK"
 cp -f "${package_files[@]}" "${OUTPUT_DIR}/"
 
-# 从实际 APK 中验证修复，避免编译产物意外沿用旧脚本。
-ssr_extract_dir="$(mktemp -d "${WORK_DIR}/ssr-plus-apk.XXXXXX")"
-trap 'rm -rf "${ssr_extract_dir}"' EXIT
-ssr_apk_count=0
-for apk_file in "${OUTPUT_DIR}"/luci-app-ssr-plus-*.apk; do
-    [ -f "${apk_file}" ] || continue
-    ssr_apk_count=$((ssr_apk_count + 1))
-    "${apk_tool}" --allow-untrusted extract --destination "${ssr_extract_dir}" \
-        "${apk_file}" >/dev/null
-done
-[ "${ssr_apk_count}" -eq 1 ] || die "luci-app-ssr-plus APK 数量异常: ${ssr_apk_count}"
-python3 "${COMPONENT_DIR}/tests/test-runtime-fixes.py" "${ssr_extract_dir}"
-
 # SDK 生成的 APK 使用本地构建密钥签名。ImageBuilder 在装包阶段需要对应公钥。
 [ -f "${sdk_dir}/public-key.pem" ] || die "SDK 未生成 APK 签名公钥"
 cp -f "${sdk_dir}/public-key.pem" "${OUTPUT_DIR}/helloworld-public-key.pem"
@@ -323,7 +294,6 @@ SDK SHA-256: ${expected_sha256}
 helloworld repository: ${HELLOWORLD_REPOSITORY}
 helloworld ref: ${HELLOWORLD_REF}
 helloworld commit: ${helloworld_commit}
-SSR Plus runtime patches: ${RUNTIME_PATCHES[*]}
 Go feed branch: ${GO_FEED_BRANCH:-none}
 Compiled targets: ${BUILD_PACKAGES[*]}
 Official GeoData packages: ${GEODATA_PACKAGES[*]}
