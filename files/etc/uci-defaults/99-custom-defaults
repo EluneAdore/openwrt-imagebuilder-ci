@@ -155,8 +155,9 @@ else
     db_sec="dropbear.@dropbear[0]"
 fi
 
-# 绑定监听接口为 LAN，防止 WAN 口暴露
-uci_set "${db_sec}.Interface=lan"
+# 由 Dropbear 将逻辑 LAN 解析为实际设备并直接绑定，清理旧的地址绑定选项。
+uci_delete "${db_sec}.Interface"
+uci_set "${db_sec}.DirectInterface=lan"
 # 禁用密码认证，仅限 SSH 密钥登录 (在 LuCI 网页后台【系统】-【管理权】中粘贴公钥即可)
 uci_set "${db_sec}.PasswordAuth=off"
 uci_set "${db_sec}.RootPasswordAuth=off"

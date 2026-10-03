@@ -1,0 +1,78 @@
+--- a/luci-app-ssr-plus/root/usr/bin/ssr-rules
++++ b/luci-app-ssr-plus/root/usr/bin/ssr-rules
+@@ -113,6 +113,19 @@
+ 	logger -s -t "ssr-rules[$$]" -p "$1" -- "$2"
+ }
+ 
++# 尚未创建的策略路由表属于正常状态，其他查询错误必须保留。
++policy_route_exists() {
++	local routes
++	if routes="$(ip route show table 999 2>&1)"; then
++		printf '%s\n' "$routes" | grep -Eq "^local.*dev lo"
++	else
++		case "$routes" in
++			*"FIB table does not exist"*) return 1 ;;
++			*) printf '%s\n' "$routes" >&2; return 2 ;;
++		esac
++	fi
++}
++
+ # IP list normalization function (for comparison)
+ normalize_ip_list() {
+ 	echo "$1" | tr ' ' '\n' | sort | tr '\n' ' ' | sed 's/ $//'
+@@ -289,8 +302,10 @@
+ 	if ip rule show | grep -Eq "fwmark ${FWMARK}.*lookup 999"; then
+ 		ip rule del fwmark ${FWMARK} table 999 2>/dev/null
+ 	fi
+-	if ip route show table 999 | grep -Eq "^local.*dev lo"; then
+-		ip route del local 0.0.0.0/0 dev lo table 999 2>/dev/null
++	if policy_route_exists; then
++		ip route del local 0.0.0.0/0 dev lo table 999 || return 1
++	elif [ "$?" -ne 1 ]; then
++		return 1
+ 	fi
+ 
+ 	# Optional: force delete all ss_spec related sets (even if table was accidentally deleted)
+@@ -327,8 +342,10 @@
+ 	if ip rule show | grep -Eq "fwmark ${FWMARK}.*lookup 999"; then
+ 		ip rule del fwmark ${FWMARK} table 999 2>/dev/null
+ 	fi
+-	if ip route show table 999 | grep -Eq "^local.*dev lo"; then
+-		ip route del local 0.0.0.0/0 dev lo table 999 2>/dev/null
++	if policy_route_exists; then
++		ip route del local 0.0.0.0/0 dev lo table 999 || return 1
++	elif [ "$?" -ne 1 ]; then
++		return 1
+ 	fi
+ 	for setname in ss_spec_lan_ac ss_spec_wan_ac ssr_gen_router \
+ 			china fplan bplan gmlan whitelist blacklist gfwlist music; do
+@@ -845,8 +862,12 @@
+ 		ip rule add fwmark ${FWMARK} table 999 priority 999 2>/dev/null
+ 	fi
+ 
+-	if ! ip route show table 999 | grep -Eq "^local.*dev lo"; then
+-		ip route add local 0.0.0.0/0 dev lo table 999 2>/dev/null
++	if policy_route_exists; then
++		:
++	elif [ "$?" -eq 1 ]; then
++		ip route add local 0.0.0.0/0 dev lo table 999 || return 1
++	else
++		return 1
+ 	fi
+ 
+ 	# create mangle table and tproxy chain
+@@ -1022,8 +1043,12 @@
+ 		ip rule add fwmark ${FWMARK} table 999 priority 999 2>/dev/null
+ 	fi
+ 
+-	if ! ip route show table 999 | grep -Eq "^local.*dev lo"; then
+-		ip route add local 0.0.0.0/0 dev lo table 999 2>/dev/null
++	if policy_route_exists; then
++		:
++	elif [ "$?" -eq 1 ]; then
++		ip route add local 0.0.0.0/0 dev lo table 999 || return 1
++	else
++		return 1
+ 	fi
+ 	$ipt -N SS_SPEC_TPROXY 2>/dev/null
+ 	$ipt -F SS_SPEC_TPROXY

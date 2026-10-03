@@ -46,6 +46,7 @@ jobs:
             flex \
             bison \
             bzip2 \
+            busybox-static \
             g++ \
             gcc-multilib \
             g++-multilib \
@@ -106,6 +107,7 @@ jobs:
         run: |
           mkdir -p .work
           OUTPUT_DIR=".work/helloworld-packages-${OPENWRT_VERSION}"
+          BUSYBOX="$(command -v busybox)" \
           OPENWRT_VERSION="${OPENWRT_VERSION}" \
           WORK_DIR=".work" \
           OUTPUT_DIR="${OUTPUT_DIR}" \

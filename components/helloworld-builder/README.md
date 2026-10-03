@@ -36,3 +36,23 @@
 - 完整性与审计元数据：`SHA256SUMS`、`BUILD-INFO.txt`
 
 主固件装配流水线通过读取 `install-constraints.txt` 将上述核心包锁定至本次编译的 `@custom` 本地签名仓库；同时将 `v2ray-geoip` 与 `v2ray-geosite` 作为同版 OpenWrt 官方 packages 源依赖自动拉取安装。
+
+## SSR Plus 运行时兼容修复
+
+源码检出后、SDK feeds 初始化前，构建脚本会精确应用 `patches/` 中的三个补丁：
+
+- 组件更新页使用 `form()` 分发，与 `SimpleForm` 模型保持一致。
+- 日志消息作为完整参数传给 BusyBox `logger`，并用 `--` 隔开选项与消息。
+- nftables 和 iptables 共用策略路由表检查：不存在的表视为正常状态，其他查询错误和路由添加、删除失败保留诊断并返回失败。
+
+补丁缺失或无法应用时终止构建，不使用模糊匹配或跳过补丁。源码及实际生成的 `luci-app-ssr-plus` APK 都会执行隔离回归检查，CI 使用 BusyBox 验证 shell 和 logger 行为，补丁名称记录到 `BUILD-INFO.txt`。
+
+可对已经应用补丁的源码包目录或解包后的 APK 目录单独运行检查：
+
+```bash
+python3 components/helloworld-builder/tests/test-runtime-fixes.py /path/to/helloworld/luci-app-ssr-plus
+# 可选：指定 BusyBox 二进制，额外验证真实 logger 对箭头、前导短横线和中文的处理。
+BUSYBOX=/path/to/busybox python3 components/helloworld-builder/tests/test-runtime-fixes.py /path/to/extracted-apk
+```
+
+这些修复需要重建 helloworld 组件后再装配固件；使用旧组件 APK 重新装配不会获得修复。
