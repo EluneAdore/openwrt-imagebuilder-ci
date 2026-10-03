@@ -145,6 +145,7 @@ OPENWRT_VERSION=25.12.5 make build     # 指定特定版本进行构建
 | **IPv6 策略** | 默认关闭 WebUI 中的 WAN6、地址/前缀获取与 AAAA 应答；完整保留 IPv6 协议栈、软件包与防火墙规则，可在 WebUI 按需恢复 |
 | **FullCone NAT** | 默认启用 IPv4 FullCone，IPv6 FullCone 保持关闭；可通过 Web 界面随时调整 |
 | **SSH 安全机制** | Dropbear 仅绑定 LAN 口监听并默认禁用密码登录，仅允许公钥免密认证 |
+| **系统升级** | 保留手动上传固件升级；不集成值守式系统升级 |
 
 ### 快速部署步骤：
 1. **解压固件**：将下载的 `.img.gz` 解压得到 `.img` 磁盘镜像文件；
