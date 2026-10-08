@@ -277,6 +277,7 @@ jobs:
               - 📶 硬件直通网卡驱动: Realtek 2.5G (`r8125-rss`), 万兆 (`r8127-rss`), Wi-Fi 6/6E (`mt7921e`, `mt7922`)
               - ⚡ 队列流控: SQM (带抗延迟 `CAKE` 算法)
               - 💻 网页终端: `ttyd`
+              - 🖥️ QEMU Guest Agent: 官方 `qemu-ga`，支持 PVE / QEMU / KVM 宿主协作（宿主需启用 Agent 通道）
               - 🌍 SSR Plus: 预编译组件集成 `luci-app-ssr-plus`、`xray-core`、`mihomo`
               - 🔄 FullCone NAT: 预编译组件集成 `kmod-nft-fullcone`、`libnftnl11`、`nftables-json`、`firewall4` 及 LuCI 界面
               - 🕒 权威授时: 阿里云 / 腾讯云 / 国家授时中心 NTP

@@ -9,7 +9,7 @@
 ## 🌟 核心特性
 
 - **现代解耦架构（纯装配固件流水线）**：
-  - **组件工厂（SDK）**：各第三方核心组件在匹配目标固件版本的官方 OpenWrt SDK 中独立预编译，生成标准签名的 Release APK 包并校验 SHA256。
+  - **组件工厂（SDK）**：各第三方核心组件在匹配目标固件版本的官方 OpenWrt SDK 中独立预编译，生成签名 APK、安装约束和 SHA256 清单，打包为当前工作流运行的 Actions Artifacts。
   - **装配流水线（ImageBuilder）**：固件流水线不下载 SDK、不编译任何组件，仅拉取并验收对应版本的权威组件产物，调用官方 ImageBuilder 执行装配打包，构建耗时仅需 **1～3 分钟**。
 - **动态版本锁定与防漂移机制**：
   - 全自动探测解析 OpenWrt 官方权威版本元数据（`downloads.openwrt.org/.versions.json`）；
@@ -25,6 +25,7 @@
   - **网络防冲突**：默认管理地址设为 `192.168.2.1`，避免与光猫默认 `192.168.1.1` 产生网段冲突；
   - **硬件与驱动**：集成 Realtek 2.5G (`r8125-rss`)、万兆 (`r8127-rss`) 网卡驱动及联发科 Wi-Fi 6/6E (`mt7921e`, `mt7922`) 固件；
   - **流控与终端**：集成 SQM CAKE 智能抗缓冲膨胀流控调度，以及浏览器免客户端终端 `ttyd`；
+  - **虚拟机管理**：集成官方 `qemu-ga`，为 PVE / QEMU / KVM 提供客户机信息查询和管理通道；没有 Guest Agent 字符端口的实体机保持服务启用，但不启动代理进程；
   - **安全与授时**：Dropbear SSH 仅限局域网 LAN 口访问并启用公钥认证；预设阿里云、腾讯云、国家授时中心 NTP 服务池。
 - **产物透明度与自动化差分报告**：
   - 自动记录每轮构建元数据（`BUILD-INFO.txt`）；
@@ -41,10 +42,10 @@ flowchart TD
     schedule["每日定时 (23:23 UTC / 北京 07:23)"] --> resolve["Job: resolve-version<br/>(仅探测并锁定一次官方稳定版本，如 25.12.5)"]
     dispatch["手动触发 (workflow_dispatch)"] --> resolve
 
-    resolve --> helloworld["Job: helloworld (Reusable)<br/>with: openwrt_version, force_rebuild=true<br/>(预编译 SSR Plus / Xray / Mihomo 并更新 Release)"]
-    resolve --> fullcone["Job: fullcone (Reusable)<br/>with: openwrt_version, force_rebuild=true<br/>(预编译 FullCone Runtime & LuCI 并更新 Release)"]
+    resolve --> helloworld["Job: helloworld (Reusable)<br/>with: openwrt_version<br/>(每次编译 SSR Plus / Xray / Mihomo 并上传 Artifact)"]
+    resolve --> fullcone["Job: fullcone (Reusable)<br/>with: openwrt_version<br/>(每次编译 FullCone Runtime & LuCI 并上传 Artifact)"]
 
-    helloworld --> firmware["Job: firmware (Assembly-Only)<br/>(下载本次组件 Release assets → 纯装配固件 → Hard Validation)"]
+    helloworld --> firmware["Job: firmware (Assembly-Only)<br/>(下载当前运行的组件 Artifacts → 纯装配固件 → Hard Validation)"]
     fullcone --> firmware
 
     firmware --> artifacts["上传 Actions Artifacts (保留 30 天)"]
@@ -58,8 +59,8 @@ flowchart TD
 | 工作流入口 | 文件路径 | 触发方式 | 功能与特性 |
 | :--- | :--- | :--- | :--- |
 | **每日自动构建 OpenWrt 固件** | [daily-build.yml](.github/workflows/daily-build.yml) | 定时任务 (`23 23 * * *`)<br>手动触发 (`workflow_dispatch`) | **全链路主流水线**：单次解析版本 → 并行强制重编两大组件 → 阻断等待成功 → 零编译纯装配固件并上传 Artifacts。具备 `concurrency` 队列保护，绝不中断正在进行的构建。 |
-| **构建 helloworld 预编译组件** | [build-helloworld.yml](.github/workflows/build-helloworld.yml) | 可复用调用 (`workflow_call`)<br>独立手动 (`workflow_dispatch`) | 独立预编译并发布 SSR Plus 产物包。支持 `force_rebuild` 参数（日常编排强制重编以吸收 packages feed 每日增量，独立手动支持缓存跳过优化）。 |
-| **构建 FullCone 预编译组件** | [build-fullcone.yml](.github/workflows/build-fullcone.yml) | 可复用调用 (`workflow_call`)<br>独立手动 (`workflow_dispatch`) | 独立预编译并发布 FullCone runtime 及 LuCI 产物包。同样支持 `force_rebuild` 参数及完整性校验。 |
+| **构建 helloworld 预编译组件** | [build-helloworld.yml](.github/workflows/build-helloworld.yml) | 可复用调用 (`workflow_call`)<br>独立手动 (`workflow_dispatch`) | 每次编译 SSR Plus 组件，校验后上传 Actions Artifact（保留 1 天）。缓存用于构建工具与源码下载；当前 `force_rebuild` 输入未参与执行判断。 |
+| **构建 FullCone 预编译组件** | [build-fullcone.yml](.github/workflows/build-fullcone.yml) | 可复用调用 (`workflow_call`)<br>独立手动 (`workflow_dispatch`) | 每次依次编译 FullCone runtime 与 LuCI，校验后上传 Actions Artifact（保留 1 天）。当前 `force_rebuild` 输入未参与执行判断。 |
 
 ---
 
@@ -75,8 +76,10 @@ flowchart TD
 │   ├── custom-feeds.conf         # 第三方软件源列表 (支持 ${VERSION_SERIES} 动态分支)
 │   └── extra-packages.txt        # 增量软件包清单 (支持行内与独立 # 注释)
 ├── files/                        # 自定义根文件系统覆盖目录 (装配时无损合入固件)
+│   ├── etc/init.d/qemu-ga        # 基于官方 procd 服务，补充 Guest Agent 字符端口检查
 │   ├── etc/uci-defaults/         # 首次开机初始化脚本 (99-custom-defaults)
 │   └── usr/sbin/                 # 固件内诊断工具 (fullcone-check)
+├── docs/repository-analysis.md   # 仓库架构、构建契约、验收与已知限制分析
 ├── scripts/
 │   ├── build-firmware.sh         # 固件纯装配核心独立流水线 (Assembly-Only)
 │   ├── resolve-version.sh        # OpenWrt 官方权威稳定版版本解析工具
@@ -107,18 +110,26 @@ flowchart TD
 
 ### 2. 本地纯装配构建 (Ubuntu / Debian / WSL2)
 
-本地构建推荐采用纯装配模式，速度极快（约 1 分钟）：
+本地纯装配需要提前准备与目标版本一致的三个预编译组件目录。可从对应组件工作流下载两份 Artifact，取得其中的 `.tar.gz` 归档；组件 Artifact 保留 1 天。新检出的仓库只有源码，`make build` 不会自动下载或编译组件。
 
 ```bash
 # 1. 检查并安装基本装配依赖
 make env
 
-# 2. 执行固件纯装配 (产物输出至 bin/ 目录)
+# 2. 解压下载的同版组件归档（以下以 25.12.5 为例）
+mkdir -p .work/helloworld-component .work/fullcone-component
+tar -xzf openwrt-component-helloworld-25.12.5-x86_64.tar.gz -C .work/helloworld-component
+tar -xzf openwrt-component-fullcone-25.12.5-x86_64.tar.gz -C .work/fullcone-component
+
+# 3. 显式指定版本与组件目录，产物输出至 bin/
+OPENWRT_VERSION=25.12.5 \
+HELLOWORLD_COMPONENT_DIR=.work/helloworld-component \
+FULLCONE_RUNTIME_DIR=.work/fullcone-component/runtime \
+FULLCONE_LUCI_DIR=.work/fullcone-component/luci \
 make build
 
 # 常用自定义参数示例:
-ROOTFS_PARTSIZE=4096 make build        # 自定义根分区大小为 4GB
-OPENWRT_VERSION=25.12.5 make build     # 指定特定版本进行构建
+OPENWRT_VERSION=25.12.5 ROOTFS_PARTSIZE=4096 make build  # 沿用已解压组件，根分区设为 4GB
 ```
 
 ### 3. 构建产物说明 (`bin/`)
@@ -144,6 +155,7 @@ OPENWRT_VERSION=25.12.5 make build     # 指定特定版本进行构建
 | **初始密码** | **无密码**（首次登录后请在 Web 界面或终端立即设置密码） |
 | **IPv6 策略** | 默认关闭 WebUI 中的 WAN6、地址/前缀获取与 AAAA 应答；完整保留 IPv6 协议栈、软件包与防火墙规则，可在 WebUI 按需恢复 |
 | **FullCone NAT** | 默认启用 IPv4 FullCone，IPv6 FullCone 保持关闭；可通过 Web 界面随时调整 |
+| **QEMU Guest Agent** | 默认启用 `qemu-ga` 服务；仅在 `/dev/virtio-ports/org.qemu.guest_agent.0` 为字符设备时启动进程，适用于提供该通道的 PVE / QEMU / KVM |
 | **SSH 安全机制** | Dropbear 仅绑定 LAN 口监听并默认禁用密码登录，仅允许公钥免密认证 |
 | **系统升级** | 保留手动上传固件升级；不集成值守式系统升级 |
 
@@ -152,6 +164,62 @@ OPENWRT_VERSION=25.12.5 make build     # 指定特定版本进行构建
 2. **虚拟化部署**：在虚拟化平台（PVE / ESXi / KVM / 飞牛 OS 等）中导入为虚拟磁盘（推荐 VirtIO 总线，**引导模式务必设为 UEFI**）；
 3. **物理机部署**：使用 Rufus、balenaEtcher 或 `dd` 将解压后的 `.img` 写入 U 盘或目标磁盘；
 4. **访问管理**：网线接入设备的 LAN 口，浏览器打开 `http://192.168.2.1` 即可进入管理后台。
+
+---
+
+## QEMU Guest Agent 部署与验收
+
+固件通过官方软件源安装 `qemu-ga`，其依赖自动带入 `virtio-console-helper`。官方 x86/64 内核已内建 `CONFIG_VIRTIO_CONSOLE=y`，无需额外安装 `kmod-virtio-console`。参见 [OpenWrt 软件包定义](https://github.com/openwrt/packages/blob/openwrt-25.12/utils/qemu/Makefile) 与 [x86/64 内核配置](https://github.com/openwrt/openwrt/blob/openwrt-25.12/target/linux/x86/64/config-6.12)。
+
+服务沿用官方 `START=99`、procd 管理、进程重启和 stderr 日志行为；仓库覆盖的 [init 脚本](files/etc/init.d/qemu-ga) 增加字符端口检查，避免实体机或未配置通道的虚拟机反复重启代理进程。官方 helper 创建命名端口，官方 `10-qemu-ga` hotplug 在设备加入时再次启动服务。上游没有 QGA 的 UCI 配置，不需要新增首次开机配置脚本。参见 [官方 init](https://github.com/openwrt/packages/blob/openwrt-25.12/utils/qemu/files/qemu-ga.init)、[端口 helper](https://github.com/openwrt/packages/blob/openwrt-25.12/utils/qemu/files/00-virtio-ports.hotplug) 与 [QGA hotplug](https://github.com/openwrt/packages/blob/openwrt-25.12/utils/qemu/files/10-qemu-ga.hotplug)。
+
+### PVE
+
+先正常关闭 OpenWrt 虚拟机，例如在客户机执行 `poweroff`；如果 PVE 当前尚未启用 QGA，也可在宿主机执行 `qm shutdown 100`。确认虚拟机已停止后，在“选项 → QEMU Guest Agent”中启用代理，或在宿主机执行下面的命令，将 `100` 替换为实际 VMID：
+
+```bash
+qm set 100 --agent enabled=1
+qm start 100
+```
+
+顺序是**正常关机 → 启用代理 → 启动虚拟机**，让新的虚拟串口配置生效；客户机内执行 `reboot` 不会重新创建宿主机上的 QEMU 进程。该步骤对应 [PVE 官方说明中的 fresh start](https://github.com/proxmox/pve-docs/blob/master/qm.adoc#qemu-guest-agent)。
+
+开机后在 PVE 宿主机验收：
+
+```bash
+qm guest cmd 100 ping
+qm guest cmd 100 network-get-interfaces
+```
+
+`ping` 成功说明宿主机与代理能通信；第二条命令应返回客户机网络接口和地址信息。
+
+### QEMU / KVM 与 libvirt
+
+宿主机需提供名为 `org.qemu.guest_agent.0` 的 VirtIO serial 通道。使用 libvirt 时，可在虚拟机 XML 的 `<devices>` 内加入以下配置，然后完全关机再启动；libvirt 会自动分配 UNIX socket 路径。参见 [libvirt Channel 文档](https://libvirt.org/formatdomain.html#channel)。
+
+```xml
+<channel type='unix'>
+  <target type='virtio' name='org.qemu.guest_agent.0'/>
+</channel>
+```
+
+### 客户机排查与构建验收
+
+在 OpenWrt 内检查服务是否启用、是否运行，以及端口是否为字符设备：
+
+```sh
+/etc/init.d/qemu-ga enabled
+/etc/init.d/qemu-ga status
+ls -l /dev/virtio-ports/org.qemu.guest_agent.0
+test -c /dev/virtio-ports/org.qemu.guest_agent.0
+logread -e qemu-ga
+```
+
+没有 Guest Agent 通道时，服务仍保持开机启用，`status` 显示未运行属于预期状态。确认宿主机已启用通道后，可执行 `/etc/init.d/qemu-ga restart` 再检查。
+
+固件构建时会硬校验 Manifest 中的 `qemu-ga` 与 `virtio-console-helper`，以及 rootfs 内的代理 ELF 二进制、两个官方 hotplug 脚本、procd init 脚本、字符端口检查和 `/etc/rc.d/S99qemu-ga` 启动链接。宿主机上的 `ping` 验收用于确认实际部署后的端到端通信。
+
+ESXi 的客户机集成使用 VMware Tools / [open-vm-tools](https://github.com/vmware/open-vm-tools)，不是 QEMU Guest Agent；本次加入 QGA 不会提供 ESXi 的 VMware Tools 功能。
 
 ---
 
@@ -190,3 +258,5 @@ fw4 print | grep -i fullcone
 # 查看 UCI 配置项
 uci get firewall.@defaults[0].fullcone
 ```
+
+仓库完整架构分析及当前限制见 [docs/repository-analysis.md](docs/repository-analysis.md)。

@@ -394,12 +394,39 @@ firmware_kernel_version="$(awk '$1 == "kernel" { print $3; exit }' "${MANIFEST_F
     die "kmod-nft-fullcone ABI (${fullcone_kernel_dependency}) 与固件 kernel (kernel=${firmware_kernel_version:-未知}) 不一致"
 }
 
+# 4. QEMU Guest Agent 与 VirtIO 端口依赖必须实际进入镜像。
+for required_package in qemu-ga virtio-console-helper; do
+    awk -v pkg="${required_package}" '$1 == pkg { found = 1 } END { exit !found }' \
+        "${MANIFEST_FILE}" || die "固件 Manifest 缺少 QEMU Guest Agent 安装包: ${required_package}"
+done
+
 # ==============================================================================
 # 8. 最终 Rootfs 深度硬校验
 # ==============================================================================
 echo "==> 执行最终 Rootfs 深度硬校验..."
 ROOTFS_DIR="$(find "${IB_DIR}/build_dir" -maxdepth 3 -type d -name 'root-x86' -print -quit)"
 [ -n "${ROOTFS_DIR}" ] || die "无法定位 ImageBuilder 最终根文件系统"
+
+# 官方包提供二进制和端口热插拔脚本；FILES 覆盖仅补充无通道时的启动保护。
+for executable_file in \
+    usr/bin/qemu-ga \
+    etc/init.d/qemu-ga \
+    etc/hotplug.d/virtio-ports/00-virtio-ports \
+    etc/hotplug.d/virtio-ports/10-qemu-ga; do
+    [ -s "${ROOTFS_DIR}/${executable_file}" ] && [ -x "${ROOTFS_DIR}/${executable_file}" ] || \
+        die "最终根文件系统缺少 QEMU Guest Agent 可执行文件: ${executable_file}"
+done
+
+rootfs_qemu_ga_file_type="$(file -b "${ROOTFS_DIR}/usr/bin/qemu-ga")"
+case "${rootfs_qemu_ga_file_type}" in
+    *ELF*) ;;
+    *) die "最终 usr/bin/qemu-ga 不是 ELF: ${rootfs_qemu_ga_file_type}" ;;
+esac
+
+cmp -s "${WORKSPACE_ROOT}/files/etc/init.d/qemu-ga" "${ROOTFS_DIR}/etc/init.d/qemu-ga" || \
+    die "最终 qemu-ga 启动脚本缺少项目维护的 VirtIO 通道保护"
+[ "$(readlink "${ROOTFS_DIR}/etc/rc.d/S99qemu-ga")" = '../init.d/qemu-ga' ] || \
+    die "最终 QEMU Guest Agent 未配置开机自启"
 
 for geodata_file in \
     usr/share/v2ray/geoip.dat \
@@ -502,4 +529,3 @@ echo "  🎉 固件纯装配成功完成！(Assembly-Only SUCCESS)"
 echo "=================================================="
 echo "产物目录: ${BIN_DIR}"
 ls -lh "${BIN_DIR}"
-
