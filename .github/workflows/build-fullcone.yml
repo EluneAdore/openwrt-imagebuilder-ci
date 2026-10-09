@@ -25,7 +25,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -190,7 +190,7 @@ jobs:
               exit 1
             }
           done
-          grep -Fxq 'luci-i18n-firewall-zh-cn@custom' "${output_dir}/luci/install-constraints.txt" || {
+          grep -Eq '^luci-i18n-firewall-zh-cn@custom($|[=~<>])' "${output_dir}/luci/install-constraints.txt" || {
             echo "❌ 错误: luci-i18n-firewall-zh-cn 未锁定到 @custom" >&2
             exit 1
           }
@@ -202,6 +202,22 @@ jobs:
           }
 
           echo "✓ FullCone runtime (4 APK) 与 luci (3 APK) 全部 Hard Validation 校验通过，无元数据覆盖风险。"
+
+      - name: 准备并发布长期可用的 FullCone APK 软件源
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          output_dir="${{ steps.build_step.outputs.output_dir }}"
+          # runtime 与 LuCI 共用一个发布快照，索引文件分别命名。
+          release_tag="custom-fullcone-${OPENWRT_VERSION}-x86_64-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          release_base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}"
+          ./scripts/prepare-component-feed.sh \
+            fullcone-runtime "${output_dir}/runtime" "${SDK_DIR}" "${release_base_url}"
+          ./scripts/prepare-component-feed.sh \
+            fullcone-luci "${output_dir}/luci" "${SDK_DIR}" "${release_base_url}"
+          ./scripts/publish-component-feed.sh \
+            "${release_tag}" "FullCone APK 源 / OpenWrt ${OPENWRT_VERSION} / ${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" \
+            "${output_dir}/runtime" "${output_dir}/luci"
 
       - name: 打包预编译组件产物
         id: package_step
@@ -216,4 +232,5 @@ jobs:
         with:
           name: fullcone-component-${{ steps.meta.outputs.version }}
           path: ${{ steps.package_step.outputs.archive_path }}
+          overwrite: true
           retention-days: 1

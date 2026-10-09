@@ -19,7 +19,7 @@ on:
         required: false
         default: "0"
       publish_release:
-        description: "是否同时发布到 GitHub Releases (默认 false 不发布，仅保留在 Actions 产物中)"
+        description: "是否发布固件 Release (默认 false；运行时所需的组件 APK 源始终发布)"
         required: false
         type: boolean
         default: false
@@ -170,6 +170,19 @@ jobs:
             exit 1
           }
 
+          # 运行时软件源必须随本次组件一起交付，拒绝旧版无源归档。
+          component_dirs=("${HW_DIR}" "${FC_DIR}/runtime" "${FC_DIR}/luci")
+          feed_kinds=(helloworld fullcone-runtime fullcone-luci)
+          for i in "${!component_dirs[@]}"; do
+            component_dir="${component_dirs[$i]}"
+            for feed_file in runtime-repository.url "${feed_kinds[$i]}-packages.adb"; do
+              [ -s "${component_dir}/${feed_file}" ] || {
+                echo "❌ 致命错误: 组件缺少已发布软件源元数据: ${component_dir}/${feed_file}" >&2
+                exit 1
+              }
+            done
+          done
+
           echo "hw_dir=${HW_DIR}" >> $GITHUB_OUTPUT
           echo "fc_runtime_dir=${FC_DIR}/runtime" >> $GITHUB_OUTPUT
           echo "fc_luci_dir=${FC_DIR}/luci" >> $GITHUB_OUTPUT
@@ -203,6 +216,11 @@ jobs:
           GRUB_TIMEOUT="${GRUB_TIMEOUT}" \
           BUILD_DATE="${BUILD_DATE}" \
           ./scripts/build-firmware.sh
+
+      - name: 验证长期组件软件源回归
+        run: |
+          CUSTOM_FEED_APK=".work/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64/staging_dir/host/bin/apk" \
+            python3 -m unittest discover -s tests -v
 
       - name: 生成 Release 发布元数据与差分报告
         id: meta
@@ -246,6 +264,7 @@ jobs:
         with:
           name: openwrt-x86_64-${{ steps.meta.outputs.tag_name }}
           path: bin/*
+          overwrite: true
           retention-days: 30
 
       - name: 自动发布 GitHub Release

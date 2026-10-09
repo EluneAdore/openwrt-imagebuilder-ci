@@ -77,7 +77,7 @@ echo "==> 正在校验预编译组件完整性..."
 
 # A. 校验 helloworld 预编译组件
 [ -d "${HELLOWORLD_COMPONENT_DIR}" ] || die "helloworld 组件目录不存在: ${HELLOWORLD_COMPONENT_DIR}"
-for req_file in BUILD-INFO.txt repository-packages.txt install-packages.txt install-constraints.txt helloworld-public-key.pem SHA256SUMS; do
+for req_file in BUILD-INFO.txt repository-packages.txt install-packages.txt install-constraints.txt helloworld-public-key.pem helloworld-packages.adb runtime-repository.url SHA256SUMS; do
     [ -s "${HELLOWORLD_COMPONENT_DIR}/${req_file}" ] || die "helloworld 缺少元数据文件: ${req_file}"
 done
 (cd "${HELLOWORLD_COMPONENT_DIR}" && sha256sum --check --strict SHA256SUMS) || die "helloworld 组件 SHA256 校验失败"
@@ -85,7 +85,7 @@ done
 hw_version="$(awk -F': ' '$1 == "OpenWrt version" { print $2; exit }' "${HELLOWORLD_COMPONENT_DIR}/BUILD-INFO.txt")"
 [ "${hw_version}" = "${OPENWRT_VERSION}" ] || die "helloworld 组件版本 (${hw_version:-未知}) 与目标版本 (${OPENWRT_VERSION}) 不一致"
 
-while IFS='=' read -r pkg_name pkg_ver; do
+while IFS='=' read -r pkg_name _pkg_ver; do
     [ -n "${pkg_name}" ] || continue
     ls "${HELLOWORLD_COMPONENT_DIR}/${pkg_name}"-*.apk >/dev/null 2>&1 || \
         die "helloworld 缺失 repository-packages.txt 中声明的 APK: ${pkg_name}"
@@ -93,7 +93,7 @@ done < "${HELLOWORLD_COMPONENT_DIR}/repository-packages.txt"
 
 # B. 校验 FullCone runtime 预编译组件
 [ -d "${FULLCONE_RUNTIME_DIR}" ] || die "FullCone runtime 组件目录不存在: ${FULLCONE_RUNTIME_DIR}"
-for req_file in BUILD-INFO.txt repository-packages.txt install-packages.txt install-constraints.txt kernel-dependency.txt fullcone-public-key.pem SHA256SUMS; do
+for req_file in BUILD-INFO.txt repository-packages.txt install-packages.txt install-constraints.txt kernel-dependency.txt fullcone-public-key.pem fullcone-runtime-packages.adb runtime-repository.url SHA256SUMS; do
     [ -s "${FULLCONE_RUNTIME_DIR}/${req_file}" ] || die "FullCone runtime 缺少元数据文件: ${req_file}"
 done
 (cd "${FULLCONE_RUNTIME_DIR}" && sha256sum --check --strict SHA256SUMS) || die "FullCone runtime 组件 SHA256 校验失败"
@@ -110,7 +110,7 @@ done
 
 # C. 校验 FullCone LuCI 预编译组件
 [ -d "${FULLCONE_LUCI_DIR}" ] || die "FullCone LuCI 组件目录不存在: ${FULLCONE_LUCI_DIR}"
-for req_file in BUILD-INFO.txt repository-packages.txt install-packages.txt install-constraints.txt luci-fullcone-public-key.pem SHA256SUMS; do
+for req_file in BUILD-INFO.txt repository-packages.txt install-packages.txt install-constraints.txt luci-fullcone-public-key.pem fullcone-luci-packages.adb runtime-repository.url SHA256SUMS; do
     [ -s "${FULLCONE_LUCI_DIR}/${req_file}" ] || die "FullCone LuCI 缺少元数据文件: ${req_file}"
 done
 (cd "${FULLCONE_LUCI_DIR}" && sha256sum --check --strict SHA256SUMS) || die "FullCone LuCI 组件 SHA256 校验失败"
@@ -118,7 +118,7 @@ done
 luci_version="$(awk -F': ' '$1 == "OpenWrt version" { print $2; exit }' "${FULLCONE_LUCI_DIR}/BUILD-INFO.txt")"
 [ "${luci_version}" = "${OPENWRT_VERSION}" ] || die "FullCone LuCI 组件版本 (${luci_version:-未知}) 与目标版本 (${OPENWRT_VERSION}) 不一致"
 
-grep -Fxq 'luci-i18n-firewall-zh-cn@custom' "${FULLCONE_LUCI_DIR}/install-constraints.txt" || \
+grep -Eq '^luci-i18n-firewall-zh-cn@custom><Q1[A-Za-z0-9+/]{27}=$' "${FULLCONE_LUCI_DIR}/install-constraints.txt" || \
     die "FullCone LuCI 翻译未锁定到 @custom"
 
 for luci_core in luci-base luci-app-firewall luci-i18n-firewall-zh-cn; do
@@ -159,6 +159,20 @@ if [ ! -d "${IB_DIR}" ] || [ ! -f "${IB_DIR}/Makefile" ]; then
 fi
 [ -f "${IB_DIR}/Makefile" ] || die "ImageBuilder 解压后目录结构不完整: ${IB_DIR}"
 echo "==> 检测到已就绪的 ImageBuilder 目录: ${IB_DIR}"
+
+# 官方 FormatPackages 会拆解摘要末尾的 '='，且 shell 会解释 '><'。
+# 只调整本地装配工具的参数格式，不编译或改写预编译组件。
+python3 "${SCRIPT_DIR}/configure-imagebuilder-apk.py" "${IB_DIR}"
+
+# 合入项目 FILES 和每次组件发布的固定 URL / 公钥，保留原始 files 目录。
+RUNTIME_FILES_DIR="$(mktemp -d "${WORK_DIR}/firmware-files.XXXXXX")"
+trap 'rm -rf "${RUNTIME_FILES_DIR}"' EXIT
+if [ -d "${FILES_DIR}" ]; then
+    cp -a "${FILES_DIR}/." "${RUNTIME_FILES_DIR}/"
+fi
+bash "${SCRIPT_DIR}/runtime-custom-feed.sh" stage \
+    "${IB_DIR}" "${RUNTIME_FILES_DIR}" "${OPENWRT_VERSION}" \
+    "${HELLOWORLD_COMPONENT_DIR}" "${FULLCONE_RUNTIME_DIR}" "${FULLCONE_LUCI_DIR}"
 
 # 以当前项目配置为准重建官方仓库列表，避免带入历史第三方源
 OFFICIAL_REPOSITORIES="${IB_DIR}/repositories.official.tmp"
@@ -317,9 +331,7 @@ BUILD_ARGS=(
     CONFIG_TARGET_ROOTFS_TARGZ=
 )
 
-if [ -d "${FILES_DIR}" ]; then
-    BUILD_ARGS+=(FILES="${FILES_DIR}")
-fi
+BUILD_ARGS+=(FILES="${RUNTIME_FILES_DIR}")
 
 make "${BUILD_ARGS[@]}"
 
@@ -507,6 +519,11 @@ grep -Fq 'nft_try_fullcone' "${ROOTFS_DIR}/usr/share/ucode/fw4.uc" || \
     die "最终根文件系统缺少 FullCone 运行时验收工具"
 grep -Fq 'fullcone=1' "${ROOTFS_DIR}/etc/uci-defaults/99-custom-defaults" || \
     die "最终首次启动配置没有启用 IPv4 FullCone"
+
+# 必须在最终 rootfs 上通过普通包安装场景，避免只通过 ImageBuilder 本地源验收。
+bash "${SCRIPT_DIR}/runtime-custom-feed.sh" verify \
+    "${IB_DIR}" "${ROOTFS_DIR}" "${OPENWRT_VERSION}" \
+    "${HELLOWORLD_COMPONENT_DIR}" "${FULLCONE_RUNTIME_DIR}" "${FULLCONE_LUCI_DIR}"
 
 # 导出构建元数据
 cp -f "${HELLOWORLD_COMPONENT_DIR}/BUILD-INFO.txt" "${BIN_DIR}/helloworld-build-info.txt"
