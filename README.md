@@ -1,162 +1,161 @@
-# OpenWrt x86_64 固件纯装配与自动化构建工程
+# openwrt-imagebuilder-ci
 
-基于 **OpenWrt 官方 ImageBuilder 与 SDK** 构建的高可用 x86_64 固件流水线。架构采用**编译与装配彻底解耦**的现代化设计：组件在官方同版 SDK 中独立预编译，固件流水线**仅执行纯装配（Assembly-Only，零组件编译与零 SDK 下载）**，兼顾极致的构建效率、确定性与内核 ABI 安全性。
+使用 OpenWrt 官方 SDK 预编译组件，再通过同版本官方 ImageBuilder 装配 x86_64 固件。支持 GitHub Actions 定时、手动构建，以及使用预编译组件进行本地装配。
 
-支持 **GitHub Actions 云端定时/手动全链路编排** 与 **本地 Ubuntu / Debian / WSL2 纯装配**。
+组件归档和固件通过 **Actions Artifacts** 交付。固件内置签名组件软件源，部署后无需在线托管这些组件。
 
----
+## 功能与支持范围
 
-## 🌟 核心特性
+- 集成 FullCone NAT 运行时、LuCI 防火墙界面和诊断工具。
+- 集成 SSR Plus、Xray、Mihomo 和对应中文语言包；GeoData 从同版本官方源安装。
+- 集成 QEMU Guest Agent、SQM、网页终端及选定的网卡驱动，软件包清单可调整。
+- 校验官方工具归档、组件签名、包身份、内核依赖和最终根文件系统，输出包清单与差分报告。
 
-- **现代解耦架构（纯装配固件流水线）**：
-  - **组件工厂（SDK）**：各第三方核心组件在匹配目标固件版本的官方 OpenWrt SDK 中独立预编译，随后显式签署 APK，生成签名索引、安装约束和 SHA256 清单，通过当前工作流运行的 Actions Artifacts 交付。
-  - **装配流水线（ImageBuilder）**：固件流水线不下载 SDK、不编译任何组件，仅拉取并验收对应版本的权威组件产物，调用官方 ImageBuilder 执行装配打包。
-- **动态版本锁定与防漂移机制**：
-  - 全自动探测解析 OpenWrt 官方权威版本元数据（`downloads.openwrt.org/.versions.json`）；
-  - 主流水线开始时**仅解析一次版本号**并单向透传给下游，彻底规避构建中途因官方版本切换导致的版本竞态与组件/内核 ABI 错配。
-- **生产级 FullCone NAT 深度集成**：
-  - 从 ImmortalWrt HEAD 提取 nftables FullCone NAT 供体补丁与源码；
-  - 在完全同版 OpenWrt 官方 SDK 中重新编译 `kmod-nft-fullcone`、`libnftnl11`、`nftables-json`、`firewall4` 及 LuCI 界面（`luci-app-firewall`、`luci-i18n-firewall-zh-cn`）；
-  - 内核 ABI 100% 匹配官方发行版内核，严禁使用 `--force-depends` 强行安装，并内置自研的真机运行时验收工具 [`fullcone-check`](files/usr/sbin/fullcone-check)。
-- **固件内置的 `@custom` 源**：
-  - 三类组件的 APK 和签名索引随固件保存在 `/usr/share/custom-apk/`，对应公钥进入 `/etc/apk/keys/`；
-  - 使用 `@custom file://` 本地源并保留定制包身份约束，安装普通官方软件包时继续使用与固件匹配的组件源；
-  - 组件源随固件保留，Actions Artifacts 到期不会影响部署后的组件源；普通官方包仍从 OpenWrt 官方源获取。
-- **SSR Plus 官方级无缝移植**：
-  - 基于 [fw876/helloworld 官方 APK CI](https://github.com/fw876/helloworld) 流程源码编译 `luci-app-ssr-plus`、`xray-core`、`mihomo` 及简体中文语言包；
-  - 按项目需求剥离 `naiveproxy`，并从同版 OpenWrt 官方源安全安装 `v2ray-geoip` 与 `v2ray-geosite`。
-- **开箱即用的实用特性与驱动集成**：
-  - **网络防冲突**：默认管理地址设为 `192.168.2.1`，避免与光猫默认 `192.168.1.1` 产生网段冲突；
-  - **硬件与驱动**：集成 Realtek 2.5G (`r8125-rss`)、万兆 (`r8127-rss`) 网卡驱动及联发科 Wi-Fi 6/6E (`mt7921e`, `mt7922`) 固件；
-  - **流控与终端**：集成 SQM CAKE 智能抗缓冲膨胀流控调度，以及浏览器免客户端终端 `ttyd`；
-  - **虚拟机管理**：集成官方 `qemu-ga`，为 PVE / QEMU / KVM 提供客户机信息查询和管理通道；没有 Guest Agent 字符端口的实体机保持服务启用，但不启动代理进程；
-  - **安全与授时**：Dropbear SSH 仅限局域网 LAN 口访问并启用公钥认证；预设阿里云、腾讯云、国家授时中心 NTP 服务池。
-- **产物透明度与自动化差分报告**：
-  - 自动记录每轮构建元数据（`BUILD-INFO.txt`）；
-  - 自动比对生成软件包清单差异报告（`manifest.diff` / `manifest.md`），升级变动一目了然。
+| 项目 | 当前范围 |
+| --- | --- |
+| 固件目标 | OpenWrt `x86/64`，默认 `generic` profile |
+| 默认镜像 | UEFI、SquashFS，压缩的 `combined-efi.img.gz` |
+| 构建环境 | Linux x86_64；CI 使用 Ubuntu，本地依赖脚本使用 Debian / Ubuntu 的 `apt-get` |
+| Windows 本地构建 | 在 WSL2 的 Linux 环境中运行，建议把工作目录放在 Linux 文件系统内 |
+| 发行版要求 | 使用 APK v3 / ADB 软件源，并提供 `.tar.zst` 格式的匹配 SDK 和 ImageBuilder |
+| 版本一致性 | SDK、ImageBuilder、组件和目标固件须使用同一 OpenWrt 版本；内核模块另检查精确 ABI 依赖 |
 
----
+当前实现未适配其他架构、使用 `opkg` 的旧版 OpenWrt 或 `snapshot`。`latest` 用于选择官方稳定版，新发行系列仍需确认工具格式、软件包和上游组件兼容性。脚本中的架构变量不代表已经支持跨架构构建。
 
-## 🏗️ 架构设计与 CI/CD 流水线
+## 快速开始
 
-### 全链路编排拓扑 (DAG)
+### 1. GitHub Actions 构建
 
-```mermaid
-flowchart TD
-    schedule["每日定时 (23:23 UTC / 北京 07:23)"] --> resolve["Job: resolve-version<br/>(仅探测并锁定一次官方稳定版本，如 25.12.5)"]
-    dispatch["手动触发 (workflow_dispatch)"] --> resolve
+1. 在自己的仓库中启用 GitHub Actions。
+2. 打开 **Actions → 每日自动构建 OpenWrt 固件 → Run workflow**，选择分支和构建参数。
+3. 等待组件构建、固件装配和验收完成，在该次运行的 **Artifacts** 下载固件。
 
-    resolve --> helloworld["Job: helloworld (Reusable)<br/>with: openwrt_version<br/>(编译并签名 helloworld 组件 → 上传 Artifact)"]
-    resolve --> fullcone["Job: fullcone (Reusable)<br/>with: openwrt_version<br/>(编译并签名 FullCone 组件 → 上传 Artifact)"]
+| 输入 | 默认值 | 用途 |
+| --- | --- | --- |
+| `openwrt_version` | `latest` | 选择官方稳定版，或填写兼容的明确版本号 |
+| `rootfs_partsize` | `2048` | 根分区大小，单位 MB；需容纳内置组件源及后续安装的软件包 |
+| `grub_timeout` | `0` | GRUB 引导等待时间，单位秒 |
 
-    helloworld --> firmware["Job: firmware (Assembly-Only)<br/>(下载当前运行的组件 Artifacts → 纯装配固件 → Hard Validation → 软件源回归)"]
-    fullcone --> firmware
-    firmware --> embedded["固件内置三份组件 APK / 签名索引 / 公钥"]
-    embedded --> runtime["部署后 APK 安装 / 更新"]
-    official["OpenWrt 官方 APK 源"] --> runtime
-    firmware --> artifacts["上传 Actions Artifacts (保留 30 天)"]
-```
+主工作流开始时解析一次版本，将结果传给两个组件工作流，再使用**本次运行**的组件产物装配固件。组件构建失败会阻止固件装配，提交代码不会自动触发构建。
 
-### GitHub Actions 三大标准入口
+定时配置为 `23 23 * * *`，即每天 **23:23 UTC / 北京时间次日 07:23**。如需调整时间，修改 [daily-build.yml](.github/workflows/daily-build.yml)。同组主工作流不并行运行，保留正在执行的构建。
 
-项目在 `.github/workflows/` 中精简规范为三个清晰的入口：
+工作流使用 `contents: read`；主工作流另有 `actions: read`。无需配置额外的 GitHub token，仓库可以保持私有。`CUSTOM_SIGNING_KEY` 为可选密钥，用于统一组件签名身份；未配置时使用 SDK 生成的密钥。
 
-| 工作流入口 | 文件路径 | 触发方式 | 功能与特性 |
-| :--- | :--- | :--- | :--- |
-| **每日自动构建 OpenWrt 固件** | [daily-build.yml](.github/workflows/daily-build.yml) | 定时任务 (`23 23 * * *`)<br>手动触发 (`workflow_dispatch`) | **全链路主流水线**：单次解析版本 → 并行强制重编两大组件 → 阻断等待成功 → 零编译纯装配固件 → 验收与软件源回归 → 上传 Artifacts。具备 `concurrency` 队列保护，绝不中断正在进行的构建。 |
-| **构建 helloworld 预编译组件** | [build-helloworld.yml](.github/workflows/build-helloworld.yml) | 可复用调用 (`workflow_call`)<br>独立手动 (`workflow_dispatch`) | 每次编译 SSR Plus 组件，严格验签并生成组件索引后上传 Actions Artifact（保留 1 天）。缓存用于构建工具与源码下载；当前 `force_rebuild` 输入未参与执行判断。 |
-| **构建 FullCone 预编译组件** | [build-fullcone.yml](.github/workflows/build-fullcone.yml) | 可复用调用 (`workflow_call`)<br>独立手动 (`workflow_dispatch`) | 每次依次编译 FullCone runtime 与 LuCI，严格验签并生成各自索引后上传 Actions Artifact（保留 1 天）。当前 `force_rebuild` 输入未参与执行判断。 |
+| 工作流 | 用途 | Artifact 保留期 |
+| --- | --- | --- |
+| [daily-build.yml](.github/workflows/daily-build.yml) | 完整构建与固件交付 | 固件 30 天 |
+| [build-helloworld.yml](.github/workflows/build-helloworld.yml) | 独立构建 SSR Plus 相关组件，也供主工作流调用 | 组件 1 天 |
+| [build-fullcone.yml](.github/workflows/build-fullcone.yml) | 独立构建 FullCone runtime 与 LuCI，也供主工作流调用 | 组件 1 天 |
 
----
-
-## 📁 项目目录结构
-
-```text
-.
-├── .github/workflows/
-│   ├── daily-build.yml           # 主流水线: 统一解析版本 / 并发预编译 / 固件纯装配
-│   ├── build-helloworld.yml      # helloworld 预编译组件流水线 (可被复用 / 独立手动)
-│   └── build-fullcone.yml        # FullCone 预编译组件流水线 (可被复用 / 独立手动)
-├── config/
-│   ├── custom-feeds.conf         # 第三方软件源列表 (支持 ${VERSION_SERIES} 动态分支)
-│   └── extra-packages.txt        # 增量软件包清单 (支持行内与独立 # 注释)
-├── files/                        # 自定义根文件系统覆盖目录 (装配时无损合入固件)
-│   ├── etc/init.d/qemu-ga        # 基于官方 procd 服务，补充 Guest Agent 字符端口检查
-│   ├── etc/uci-defaults/         # 首次开机初始化脚本 (99-custom-defaults)
-│   └── usr/sbin/                 # 固件内诊断工具 (fullcone-check)
-├── docs/repository-analysis.md   # 仓库架构、构建契约、验收与已知限制分析
-├── scripts/
-│   ├── build-firmware.sh         # 固件纯装配核心独立流水线 (Assembly-Only)
-│   ├── prepare-component-feed.sh # 签署 SDK APK，生成签名索引、身份约束与完整校验清单
-│   ├── runtime-custom-feed.sh     # 内置组件 APK / 索引 / 公钥，并在 rootfs 副本中验收 APK 事务
-│   ├── configure-imagebuilder-apk.py # 调整本地 ImageBuilder，完整传递 APK 身份约束
-│   ├── resolve-version.sh        # OpenWrt 官方权威稳定版版本解析工具
-│   ├── diff_manifest.py          # 软件包清单差分比对工具 (生成 diff 与 md 报告)
-│   ├── setup-env.sh              # 宿主系统依赖环境检测与自动安装
-│   └── setup-sdk.sh              # 组件编译共享 SDK 环境准备工具
-├── components/
-│   ├── helloworld-builder/       # SSR Plus / Xray / Mihomo 预编译组件 (build.sh)
-│   └── fullcone-builder/         # FullCone runtime 与 LuCI 预编译组件 (build.sh, build-luci.sh)
-├── Makefile                      # 常用构建命令快捷入口
-└── README.md
-```
-
----
-
-## 🚀 快速上手
-
-### 1. 云端构建 (GitHub Actions)
-
-- **每日全自动编排**：每天**北京时间上午 07:23**（即 `23:23 UTC`）由主流水线自动触发，执行版本锁定、组件并发强制重编与固件纯装配。组件归档和固件均通过 GitHub Actions Artifacts 交付，固件 Artifact 保留 30 天。工作流仅需 `contents: read`，仓库可保持私有。
-- **纯净提交策略**：代码推送 (Push) 不触发任何构建，杜绝 Actions 额度浪费。
-- **手动触发构建**：
-  - **构建完整固件**：在 Actions -> **每日自动构建 OpenWrt 固件** 中点击 **Run workflow**：
-    - `openwrt_version`: 默认 `latest`（自动探测最新稳定版），亦可指定如 `25.12.5`；
-    - `rootfs_partsize`: 根分区大小，默认 `2048` MB (2GB)；
-    - `grub_timeout`: GRUB 引导等待时间，默认 `0` 秒。
-  - **独立构建组件**：如需单独更新某一组件，可在对应的预编译工作流中独立触发。
+独立组件构建只生成组件归档，不会更新已有固件。组件工作流中的 `force_rebuild` 输入目前不参与构建判断，每次运行都会编译组件。
 
 ### 2. 本地纯装配构建 (Ubuntu / Debian / WSL2)
 
-本地纯装配需要提前准备与目标版本一致的三个预编译组件目录。可从对应组件工作流下载两份 Artifact，取得其中的 `.tar.gz` 归档；组件 Artifact 保留 1 天。归档须包含 APK、签名索引、公钥和完整 SHA256 清单；新检出的仓库只有源码，`make build` 不会自动下载或编译组件。装配需要联网获取官方 ImageBuilder 和普通官方包，组件源直接从已验收的归档内置到固件。
+在仓库根目录执行。先下载兼容且同版本的两份组件 Artifact，解开 Artifact 的下载包，取得其中的 `.tar.gz` 归档。归档须包含 APK、签名索引、公钥、安装约束和 `SHA256SUMS`；仅包含 APK 的旧归档不能直接使用。
+
+以下归档路径是占位示例，请替换为实际文件位置。版本从组件构建信息读取，避免与下载的组件不一致。
 
 ```bash
-# 1. 检查并安装基本装配依赖
 make env
 
-# 2. 解压下载的同版组件归档（以下以 25.12.5 为例）
-mkdir -p .work/helloworld-component .work/fullcone-component
-tar -xzf openwrt-component-helloworld-25.12.5-x86_64.tar.gz -C .work/helloworld-component
-tar -xzf openwrt-component-fullcone-25.12.5-x86_64.tar.gz -C .work/fullcone-component
+# 两个路径分别指向下载得到的 helloworld 和 FullCone 组件归档
+HELLOWORLD_ARCHIVE="/path/to/helloworld.tar.gz"
+FULLCONE_ARCHIVE="/path/to/fullcone.tar.gz"
 
-# 3. 显式指定版本与组件目录，产物输出至 bin/
-OPENWRT_VERSION=25.12.5 \
-HELLOWORLD_COMPONENT_DIR=.work/helloworld-component \
-FULLCONE_RUNTIME_DIR=.work/fullcone-component/runtime \
-FULLCONE_LUCI_DIR=.work/fullcone-component/luci \
+mkdir -p .work/components/helloworld .work/components/fullcone
+tar -xzf "${HELLOWORLD_ARCHIVE}" -C .work/components/helloworld
+tar -xzf "${FULLCONE_ARCHIVE}" -C .work/components/fullcone
+
+export HELLOWORLD_COMPONENT_DIR="${PWD}/.work/components/helloworld"
+export FULLCONE_RUNTIME_DIR="${PWD}/.work/components/fullcone/runtime"
+export FULLCONE_LUCI_DIR="${PWD}/.work/components/fullcone/luci"
+export OPENWRT_VERSION="$(sed -n 's/^OpenWrt version: //p' "${HELLOWORLD_COMPONENT_DIR}/BUILD-INFO.txt")"
+
 make build
 
-# 常用自定义参数示例:
-OPENWRT_VERSION=25.12.5 ROOTFS_PARTSIZE=4096 make build  # 沿用已解压组件，根分区设为 4GB
+# 沿用上述版本和组件路径，调整根分区大小与引导等待时间
+ROOTFS_PARTSIZE=4096 GRUB_TIMEOUT=3 make build
 ```
 
-### 3. 构建产物说明 (`bin/`)
+`make env` 检查依赖并通过 `apt-get` 安装缺失项，需要相应权限。本地装配会下载官方 ImageBuilder 和普通软件包，组件 APK 则直接来自已准备的目录。
 
-- `openwrt-*-x86-64-generic-squashfs-combined-efi-YYYYMMDD-HHMM.img.gz`：UEFI 引导固件压缩镜像
-- `sha256sums`：SHA256 校验和文件
-- `*.manifest`：固件集成软件包完整清单
-- `manifest.diff` / `manifest.md`：软件包版本变动差异对比报告
-- `helloworld-build-info.txt`：本次 helloworld 源码提交与编译目标元数据记录
-- `fullcone-runtime-build-info.txt`：本次 ImmortalWrt donor、nft-fullcone 上游提交、内核 ABI 记录
-- `fullcone-luci-build-info.txt`：本次 LuCI 稳定分支 commit 与补丁元数据记录
+`make build` 不编译组件，也不自动下载 CI Artifact。多版本目录共存时，应像示例一样显式指定版本及三个组件路径；仅设置 `OPENWRT_VERSION=latest` 可能与已有组件不匹配。更换归档时使用空的解压目录，避免混入旧文件。
 
----
+自行编译组件时，使用 [components/](components/) 下的构建脚本，并在编译后为每类组件执行签名源准备。命令格式为：
 
-## `@custom` 软件源部署与维护
+```text
+bash scripts/prepare-component-feed.sh <feed-kind> <component-dir> <sdk-dir>
+```
 
-组件 job 在同版 SDK 编译后，对未签名 APK 校验内容并补签，严格验证全部 APK 与签名索引，再上传组件 Artifact。固件 job 等待这些步骤成功，验收归档后将三个组件源完整装入镜像。构建和部署无需公开仓库、`gh` 或额外 GitHub token，Actions 的仓库内容权限仅为只读。
+`feed-kind` 可选 `helloworld`、`fullcone-runtime` 或 `fullcone-luci`。组件构建输入和产物契约见 [仓库分析](docs/repository-analysis.md)。
 
-固件内的 `/etc/apk/repositories.d/custom-components.list` 包含以下三行，对应公钥位于 `/etc/apk/keys/`：
+## 配置与定制
+
+| 配置入口 | 用途 |
+| --- | --- |
+| [config/extra-packages.txt](config/extra-packages.txt) | 增量软件包，每行一个名称；支持注释和 `-包名` 移除项 |
+| [config/custom-feeds.conf](config/custom-feeds.conf) | 额外的构建期 APK 源，支持 `${VERSION_SERIES}` 替换；运行时源配置需另放入覆盖文件 |
+| `config/keys/` | 额外构建期软件源的公钥；运行时需要的公钥也须随覆盖文件进入固件 |
+| [files/](files/) | 根文件系统覆盖文件，路径对应固件根目录 |
+| [99-custom-defaults](files/etc/uci-defaults/99-custom-defaults) | 首次初始化的网络、IPv6、FullCone、SSH、语言、时区、NTP 和主题设置 |
+| [qemu-ga](files/etc/init.d/qemu-ga) | Guest Agent 的 procd 服务和通道检查 |
+
+组件安装清单和身份约束由构建脚本生成，会覆盖增量清单中同名组件的选择。移除核心组件需要同步调整组件构建与验收规则。覆盖文件中也应保留验收要求的 QGA、FullCone 工具和初始化脚本。
+
+常用本地装配变量如下，完整实现见 [build-firmware.sh](scripts/build-firmware.sh)：
+
+| 变量 | 默认值 / 要求 | 用途 |
+| --- | --- | --- |
+| `OPENWRT_VERSION` | `latest`；本地建议与组件版号一致 | 目标 OpenWrt 版本 |
+| `HELLOWORLD_COMPONENT_DIR` | 显式指定 | helloworld 组件目录 |
+| `FULLCONE_RUNTIME_DIR` / `FULLCONE_LUCI_DIR` | 显式指定 | FullCone 的两个组件目录 |
+| `ROOTFS_PARTSIZE` | `2048` | 根分区大小，单位 MB |
+| `GRUB_TIMEOUT` | `0` | 引导等待时间，单位秒 |
+| `WORK_DIR` / `BIN_DIR` | `.work/` / `bin/` | 工作缓存和交付目录 |
+| `CONFIG_DIR` / `FILES_DIR` | `config/` / `files/` | 软件包配置和覆盖文件目录 |
+| `BUILD_DATE` | 当前构建时间 | 产物文件名中的时间标识 |
+
+`make help` 查看命令；`make clean` 清理 `bin/`，`make distclean` 同时删除 `.work/`。装配脚本也会清空指定的 `BIN_DIR`，应使用专门的交付目录。
+
+## 构建产物与部署
+
+| 产物 | 内容 |
+| --- | --- |
+| `*combined-efi*.img.gz` | 压缩的 UEFI 磁盘镜像，部署前解压为 `.img` |
+| `sha256sums` | 镜像 SHA256 校验和 |
+| `*.manifest` | 固件软件包及版本清单 |
+| `manifest.diff` / `manifest.md` | 与历史 Manifest 的差分报告；无历史记录时作为首次基线 |
+| `*-build-info.txt` | 三类组件的构建版本、源码提交和相关元数据 |
+
+本地产物位于 `bin/`，CI 产物位于运行页面的 Artifacts。解压 Artifact 后，在包含镜像和校验文件的目录中执行：
+
+```sh
+sha256sum -c sha256sums
+```
+
+虚拟机使用 UEFI / OVMF 引导，并按平台要求导入磁盘镜像。物理机需支持 x86_64 和 UEFI，网卡等设备还需对应驱动。磁盘与网络设备的映射应根据实际硬件配置，不能按固定接口编号套用。
+
+物理机部署时，将解压后的 `.img` 写入目标磁盘，再从该磁盘启动。写入会覆盖磁盘原有内容，执行前确认设备和目标磁盘。
+
+当前初始化脚本提供以下预设，可在构建前修改对应覆盖文件，或部署后在 LuCI 中调整：
+
+| 项目 | 默认设置 |
+| --- | --- |
+| LAN 管理地址 | `192.168.2.1/24`；部署前确认不与现有网络冲突 |
+| WAN | PPPoE，账号和密码未预填；按实际接入方式调整 |
+| 登录 | `root`，初始未设置密码；首次进入管理界面后设置密码 |
+| SSH | 绑定 LAN，仅允许公钥认证；需要预置或上传自己的公钥 |
+| IPv6 | 默认关闭相关地址请求、通告和 AAAA 应答，保留组件与恢复能力 |
+| FullCone | IPv4 启用，IPv6 FullCone 关闭 |
+| 界面与授时 | 简体中文、Footstrap 主题、`Asia/Shanghai` 时区及国内 NTP 预设 |
+| QEMU Guest Agent | 服务启用，有对应字符设备通道时启动代理进程 |
+
+这些是本仓库的配置选择，应根据网络、地区和运行环境调整。首次初始化脚本不等于每次启动强制覆盖配置；升级保留配置时，实际设置可能延续旧系统。
+
+## 内置 `@custom` 软件源
+
+固件把组件 APK 与签名索引保存在 `/usr/share/custom-apk/<kind>/`，公钥位于 `/etc/apk/keys/`。`/etc/apk/repositories.d/custom-components.list` 引用三份本地索引：
 
 ```text
 @custom file:///usr/share/custom-apk/helloworld/helloworld-packages.adb
@@ -164,11 +163,11 @@ OPENWRT_VERSION=25.12.5 ROOTFS_PARTSIZE=4096 make build  # 沿用已解压组件
 @custom file:///usr/share/custom-apk/fullcone-luci/fullcone-luci-packages.adb
 ```
 
-每个目录同时保存该索引引用的 `<包名>-<版本>.apk`，包括版本中原有的 `~` 等字符。APK 内部版本与身份保持原值。索引和 APK 均严格验签，元数据、安装约束、公钥与索引进入 SHA256 清单；固件验收还逐字节比对内置文件与组件归档。默认使用 SDK 生成的签名密钥，公钥随组件进入固件；`CUSTOM_SIGNING_KEY` 仍可选，用于统一多个构建的签名身份。
+每份索引和 APK 均严格验签。定制包以 `name@custom><Q1...=` 固定安装身份，避免普通装包或升级时被官方同名包替换。组件源与这份固件固定匹配，不会自动追踪新的组件版本。
 
-定制包使用 `name@custom><Q1...=` 形式固定 APK 身份。装配脚本会先调整本地 ImageBuilder 的 `FormatPackages`，将完整约束作为一个参数传给 APK，避免摘要末尾的 `=` 被拆分或 `><` 被 shell 解释；普通包的版本与 ABI 后缀处理保留原有逻辑。无法识别的 ImageBuilder 格式会阻止构建。
+内置源读取无需联网，普通包及其依赖仍从 OpenWrt 官方源获取。完整 APK 会增加镜像和根文件系统占用；请保留内置目录、源配置和公钥。Actions Artifact 到期不影响已部署固件读取组件源。
 
-部署新固件后可检查并验证：
+在 OpenWrt 内检查：
 
 ```sh
 cat /etc/apk/repositories.d/custom-components.list
@@ -177,69 +176,38 @@ apk update
 apk add --simulate coremark
 ```
 
-`apk update` 应能读取内置组件索引并获取官方索引；模拟安装应不再报 `missing repository tags`，且无需更换 FullCone / LuCI 定制包。普通官方包仍需要访问 OpenWrt 官方源。组件源是**与这份固件匹配的固定快照**，不会自动获取新的组件版本；涉及内核或组件变化时，应采用对应的完整新固件。
-
-完整 APK 和签名索引随固件保留，会增加镜像与根文件系统的空间占用。Actions Artifact 到期、仓库改名或转为私有均不影响已部署固件的本地组件源。请保留 `/usr/share/custom-apk/` 和对应公钥；已部署的旧固件不会因仓库代码更新自动获得这些文件，推荐重新构建并部署完整新固件。手工恢复旧固件时，必须使用与其已安装 APK 身份、签名公钥及内核 ABI 完全匹配的原始组件。
-
-回归测试使用真实 APK v3 工具检查 SDK 产物补签、索引与身份约束、普通包安装 / 升级时保持定制身份，以及 ImageBuilder 参数传递。运行时源测试检查内置 APK、索引、公钥、world、失败阻断和 rootfs 副本中的模拟安装。详细范围和命令见 [仓库分析的验证边界](docs/repository-analysis.md#验证边界)。
-
-主工作流的 firmware job 在装配后指定同版 ImageBuilder 的 APK 工具运行这些回归；检查通过后上传固件 Artifact。代码更新后应创建新的 workflow 运行，验证完整装配与最终镜像；直接重跑旧运行仍使用旧提交。
-
----
-
-## 💻 默认系统配置与部署说明
-
-| 配置项 | 默认值 / 策略说明 |
-| :--- | :--- |
-| **引导方式** | **UEFI (GPT)**（虚拟机创建时引导类型务必选择 UEFI / OVMF） |
-| **默认后台地址** | `http://192.168.2.1`（已调整为 192.168.2.1，彻底避免与上级光猫冲突） |
-| **子网掩码** | `255.255.255.0` |
-| **默认账号** | `root` |
-| **初始密码** | **无密码**（首次登录后请在 Web 界面或终端立即设置密码） |
-| **IPv6 策略** | 默认关闭 WebUI 中的 WAN6、地址/前缀获取与 AAAA 应答；完整保留 IPv6 协议栈、软件包与防火墙规则，可在 WebUI 按需恢复 |
-| **FullCone NAT** | 默认启用 IPv4 FullCone，IPv6 FullCone 保持关闭；可通过 Web 界面随时调整 |
-| **QEMU Guest Agent** | 默认启用 `qemu-ga` 服务；仅在 `/dev/virtio-ports/org.qemu.guest_agent.0` 为字符设备时启动进程，适用于提供该通道的 PVE / QEMU / KVM |
-| **SSH 安全机制** | Dropbear 仅绑定 LAN 口监听并默认禁用密码登录，仅允许公钥免密认证 |
-| **系统升级** | 保留手动上传固件升级；不集成值守式系统升级 |
-
-### 快速部署步骤：
-
-1. **解压固件**：将下载的 `.img.gz` 解压得到 `.img` 磁盘镜像文件；
-2. **虚拟化部署**：在虚拟化平台（PVE / ESXi / KVM / 飞牛 OS 等）中导入为虚拟磁盘（推荐 VirtIO 总线，**引导模式务必设为 UEFI**）；
-3. **物理机部署**：使用 Rufus、balenaEtcher 或 `dd` 将解压后的 `.img` 写入 U 盘或目标磁盘；
-4. **访问管理**：网线接入设备的 LAN 口，浏览器打开 `http://192.168.2.1` 即可进入管理后台。
-
----
+更新仓库代码不会修改已有固件。组件或内核变更后，应构建并部署匹配的新固件；手工恢复旧固件的源，需要使用与已安装组件身份、公钥和内核 ABI 一致的原始产物。
 
 ## QEMU Guest Agent 部署与验收
 
-固件通过官方软件源安装 `qemu-ga`，其依赖自动带入 `virtio-console-helper`。官方 x86/64 内核已内建 `CONFIG_VIRTIO_CONSOLE=y`，无需额外安装 `kmod-virtio-console`。参见 [OpenWrt 软件包定义](https://github.com/openwrt/packages/blob/openwrt-25.12/utils/qemu/Makefile) 与 [x86/64 内核配置](https://github.com/openwrt/openwrt/blob/openwrt-25.12/target/linux/x86/64/config-6.12)。
+固件安装官方 `qemu-ga` 和依赖 `virtio-console-helper`。宿主机需提供名为 `org.qemu.guest_agent.0` 的 VirtIO serial 通道；仓库的 [服务脚本](files/etc/init.d/qemu-ga) 仅在 `/dev/virtio-ports/org.qemu.guest_agent.0` 为字符设备时启动进程。没有该通道的设备，服务启用但未运行属于预期状态。
 
-服务沿用官方 `START=99`、procd 管理、进程重启和 stderr 日志行为；仓库覆盖的 [init 脚本](files/etc/init.d/qemu-ga) 增加字符端口检查，避免实体机或未配置通道的虚拟机反复重启代理进程。官方 helper 创建命名端口，官方 `10-qemu-ga` hotplug 在设备加入时再次启动服务。上游没有 QGA 的 UCI 配置，不需要新增首次开机配置脚本。参见 [官方 init](https://github.com/openwrt/packages/blob/openwrt-25.12/utils/qemu/files/qemu-ga.init)、[端口 helper](https://github.com/openwrt/packages/blob/openwrt-25.12/utils/qemu/files/00-virtio-ports.hotplug) 与 [QGA hotplug](https://github.com/openwrt/packages/blob/openwrt-25.12/utils/qemu/files/10-qemu-ga.hotplug)。
+在客户机中检查：
 
-### PVE
-
-先正常关闭 OpenWrt 虚拟机，例如在客户机执行 `poweroff`；如果 PVE 当前尚未启用 QGA，也可在宿主机执行 `qm shutdown 100`。确认虚拟机已停止后，在“选项 → QEMU Guest Agent”中启用代理，或在宿主机执行下面的命令，将 `100` 替换为实际 VMID：
-
-```bash
-qm set 100 --agent enabled=1
-qm start 100
+```sh
+test -c /dev/virtio-ports/org.qemu.guest_agent.0
+/etc/init.d/qemu-ga enabled
+/etc/init.d/qemu-ga status
+logread -e qemu-ga
 ```
 
-顺序是**正常关机 → 启用代理 → 启动虚拟机**，让新的虚拟串口配置生效；客户机内执行 `reboot` 不会重新创建宿主机上的 QEMU 进程。该步骤对应 [PVE 官方说明中的 fresh start](https://github.com/proxmox/pve-docs/blob/master/qm.adoc#qemu-guest-agent)。
+配置宿主通道后，完全关闭并重新启动虚拟机，再检查代理状态。宿主侧实际查询成功才说明通信可用。
 
-开机后在 PVE 宿主机验收：
+### Proxmox VE 示例
 
-```bash
-qm guest cmd 100 ping
-qm guest cmd 100 network-get-interfaces
+先正常关闭虚拟机，在其选项中启用 QEMU Guest Agent，再启动。该设置需要一次完整启动才能生效，参见 [PVE 官方说明](https://github.com/proxmox/pve-docs/blob/master/qm.adoc#qemu-guest-agent)。以下在宿主机执行，将 `vm_id` 改为实际 ID：
+
+```sh
+vm_id=100
+qm set "${vm_id}" --agent enabled=1
+qm start "${vm_id}"
+qm guest cmd "${vm_id}" ping
+qm guest cmd "${vm_id}" network-get-interfaces
 ```
 
-`ping` 成功说明宿主机与代理能通信；第二条命令应返回客户机网络接口和地址信息。
+### libvirt 示例
 
-### QEMU / KVM 与 libvirt
-
-宿主机需提供名为 `org.qemu.guest_agent.0` 的 VirtIO serial 通道。使用 libvirt 时，可在虚拟机 XML 的 `<devices>` 内加入以下配置，然后完全关机再启动；libvirt 会自动分配 UNIX socket 路径。参见 [libvirt Channel 文档](https://libvirt.org/formatdomain.html#channel)。
+在虚拟机 XML 的 `<devices>` 中配置通道，关闭并重新启动虚拟机。完整参数见 [libvirt Channel 文档](https://libvirt.org/formatdomain.html#channel)。
 
 ```xml
 <channel type='unix'>
@@ -247,60 +215,59 @@ qm guest cmd 100 network-get-interfaces
 </channel>
 ```
 
-### 客户机排查与构建验收
+其他 QEMU / KVM 平台按其通道配置方式操作。VMware 平台使用自己的客户机集成工具，QGA 不提供 VMware Tools 功能。
 
-在 OpenWrt 内检查服务是否启用、是否运行，以及端口是否为字符设备：
+## 验证与常见问题
+
+固件构建会检查组件清单、FullCone 内核依赖、运行时文件和 QGA 服务，并在 rootfs 副本中执行 `apk update` 与普通包模拟安装。部署后仍需验证实际网络和宿主通信。
+
+FullCone 的设备端检查使用 [fullcone-check](files/usr/sbin/fullcone-check)：
 
 ```sh
-/etc/init.d/qemu-ga enabled
-/etc/init.d/qemu-ga status
-ls -l /dev/virtio-ports/org.qemu.guest_agent.0
-test -c /dev/virtio-ports/org.qemu.guest_agent.0
-logread -e qemu-ga
+fullcone-check syntax   # 加载模块，检查内核表达式和 fw4 生成规则
+fullcone-check status   # 检查当前活动规则集
+fullcone-check luci     # 检查 LuCI capability 与活动规则
+fullcone-check restart  # 重启防火墙并检查规则，可能短暂影响连接
 ```
 
-没有 Guest Agent 通道时，服务仍保持开机启用，`status` 显示未运行属于预期状态。确认宿主机已启用通道后，可执行 `/etc/init.d/qemu-ga restart` 再检查。
+开发回归测试：
 
-固件构建时会硬校验 Manifest 中的 `qemu-ga` 与 `virtio-console-helper`，以及 rootfs 内的代理 ELF 二进制、两个官方 hotplug 脚本、procd init 脚本、字符端口检查和 `/etc/rc.d/S99qemu-ga` 启动链接。宿主机上的 `ping` 验收用于确认实际部署后的端到端通信。
-
-ESXi 的客户机集成使用 VMware Tools / [open-vm-tools](https://github.com/vmware/open-vm-tools)，不是 QEMU Guest Agent；本次加入 QGA 不会提供 ESXi 的 VMware Tools 功能。
-
----
-
-## 🔄 FullCone NAT 深度验证指南
-
-固件中的 FullCone 链条采用**官方原版内核 ABI 级嫁接**，并在固件内置了生产级自检工具 `/usr/sbin/fullcone-check`。
-
-### 内置验收工具：`fullcone-check`
-
-```bash
-# 1. 语法静态校验 (开机第一道防线，由 99-custom-defaults 首次启动自动调用)
-fullcone-check syntax
-
-# 2. 运行时状态诊断 (检查内核模块、fw4 规则集与当前活跃 ruleset 是否生效)
-fullcone-check status
-
-# 3. 热重载稳定性验收 (重启 firewall 服务并验证 ruleset 规则不丢失)
-fullcone-check restart
-
-# 4. LuCI 控制台 RPC 验证 (通过 ubus 验证 Web 前端能否识别 fullcone capability)
-fullcone-check luci
+```sh
+python3 -m unittest discover -s tests -v
 ```
 
-### 手工核验证据链：
+测试使用真实 APK v3 工具和临时密钥，默认从 `.work/` 查找 SDK / ImageBuilder，也可设置 `CUSTOM_FEED_APK` 指定工具路径。需要 `openssl`；ImageBuilder 参数检查还需要对应 Makefile 和 GNU make。缺少前置条件时相关测试会跳过，跳过不等于验证通过。
 
-```bash
-# 检查内核模块是否加载
-lsmod | grep -i fullcone
+| 现象 | 检查方向 |
+| --- | --- |
+| 本地缺少组件或签名索引 | 确认 Artifact 已解压，目录中含签名源完整文件；自行编译后需执行源准备脚本 |
+| 版本、架构或内核依赖不匹配 | 使用同版本工具和组件，核对 `BUILD-INFO.txt`；不要强制忽略依赖 |
+| `missing repository tags` | 检查内置 APK / 索引、三条 `@custom` 配置、公钥与已安装身份是否匹配 |
+| 官方包安装失败 | 检查设备 DNS、时间和官方源连通性；内置组件源不提供所有官方包 |
+| QGA 未运行 | 检查宿主 Agent 通道及客户机字符设备；无通道设备可保持未运行 |
+| 修改代码后重跑仍使用旧逻辑 | 在目标分支新建工作流运行，重跑旧运行仍使用原提交 |
 
-# 检查 nftables 活跃规则集中是否包含 fullcone 规则
-nft list ruleset | grep -i fullcone
+## 仓库结构与进一步阅读
 
-# 查看 firewall4 规则输出
-fw4 print | grep -i fullcone
-
-# 查看 UCI 配置项
-uci get firewall.@defaults[0].fullcone
+```text
+.github/workflows/   # 主工作流与两个组件工作流
+components/         # SDK 组件构建脚本及补丁
+config/             # 增量包、额外源与公钥配置
+files/              # 固件覆盖文件和首次初始化脚本
+scripts/            # 工具准备、签名源准备、装配与验收
+tests/              # APK 源与 ImageBuilder 参数回归
+docs/               # 架构分析、产物契约和验证边界
+Makefile            # 构建、依赖检查与清理入口
 ```
 
-仓库完整架构分析及当前限制见 [docs/repository-analysis.md](docs/repository-analysis.md)。
+```mermaid
+flowchart LR
+    version["解析并锁定版本"] --> hw["SDK：helloworld"]
+    version --> fc["SDK：FullCone runtime + LuCI"]
+    hw --> components["签名组件 Artifacts"]
+    fc --> components
+    components --> assembly["同版 ImageBuilder 装配与验收"]
+    assembly --> firmware["固件 Artifact：镜像 + 内置组件源"]
+```
+
+详细实现、组件契约、构建验收及已知限制见 [docs/repository-analysis.md](docs/repository-analysis.md)。
