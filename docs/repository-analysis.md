@@ -133,6 +133,8 @@ helloworld 归档为 `openwrt-component-helloworld-${version}-x86_64.tar.gz`，�
 
 安装前会把三个目录的 APK 复制到 ImageBuilder `packages/`，同名 APK 冲突立即失败，导入公钥，配置构建期 `@custom file://.../packages.adb`。解析增量包后，以组件约束替换同名条目，保证组件核心包来自本次本地仓库。`runtime-custom-feed.sh stage` 对三类组件检查版本、架构、元数据、完整 SHA256 覆盖、APK 与索引签名、索引包集合和身份约束，再将 APK 与签名索引复制到覆盖目录的 `/usr/share/custom-apk/<kind>/`，公钥复制到 `/etc/apk/keys/`。
 
+官方 ImageBuilder 的[包合并规则](https://github.com/openwrt/openwrt/blob/openwrt-25.12/target/imagebuilder/files/Makefile#L143)把默认包和 profile 包追加在增量包之后。APK 对同名安装参数采用后项；例如默认的 `firewall4` 会覆盖前面的 `firewall4@custom><Q1...=`，导致 world 丢失定制身份。因此装配脚本为每个定制身份约束同时添加 `-name`，由 ImageBuilder 过滤同名普通条目，再将完整约束传给 APK。普通增量包、移除项和官方基础包的版本约束继续参与原有合并流程。
+
 身份约束格式为 `name@custom><Q1...=`，摘要取自 ADB 索引条目的身份，而非 APK 文件的普通 SHA256。官方 ImageBuilder 的 `FormatPackages` 会按 `=` 拆分包版本，未加引号的 `><` 也会被 shell 当作重定向。[装配前的兼容处理](../scripts/build-firmware.sh)调用 `configure-imagebuilder-apk.py`，仅对这种身份约束保留完整参数并加 shell 引号，普通版本约束和 ABI 后缀继续采用原逻辑。修改可重复执行；上游 `FormatPackages` 结构无法识别时会停止装配。
 
 运行时覆盖文件为 `/etc/apk/repositories.d/custom-components.list`，包含三条本地索引地址：
@@ -204,12 +206,13 @@ Actions Artifact 到期、仓库改名或转为私有均不影响已经部署的
 
 ## 验证边界
 
-`@custom` 软件源回归位于 [tests/test_custom_feed.py](../tests/test_custom_feed.py)，32 项已在本地全部通过，使用真实 OpenWrt ImageBuilder APK v3 工具和临时签名密钥，验证以下范围：
+`@custom` 软件源回归位于 [tests/test_custom_feed.py](../tests/test_custom_feed.py)，33 项已在本地全部通过，使用真实 OpenWrt ImageBuilder APK v3 工具和临时签名密钥，验证以下范围：
 
 - 三类组件未签名 SDK APK 的首次补签、严格验签和真实安装；签名后更新文件 SHA256 并保持安装身份，重复准备不改写已签名 APK。损坏的未签名内容即使重算原 SHA 仍拒绝，`adbsign` 返回成功却不签名时也必须失败且保留原产物。
 - 三类组件的签名索引、正确的 APK 身份约束和完整 SHA256 覆盖，以及错误密钥、篡改 APK、缺失包、错版 / 错架构的拒绝行为。
 - 官方源与定制源存在同名同版本、不同内容 APK 时，普通包安装和升级保持定制身份；移除 `@custom` 源可重现原始 `missing repository tag` 故障。
 - 从实际 ImageBuilder Makefile 提取 `FormatPackages` 并执行 GNU make，确认完整身份约束、普通版本约束及 ABI 后缀正确传入程序，兼容修改可重复执行，未知格式会失败。
+- 执行装配脚本的实际包选择逻辑和官方 Makefile 的默认包 / profile 合并规则，再用真实 APK 安装；同名同版本官方包存在时，定制内容和 world 身份约束必须保留，普通包、移除项及基础包版本约束也须生效，并通过最终内置源验收。
 - `runtime-custom-feed.sh` 的三条本地源配置、公钥、内置 APK 与签名索引、world 和 rootfs 副本模拟安装；签名和 APK 求解使用真实工具。错误索引、损坏或缺失的 APK、校验覆盖缺失、错误公钥或身份必须被拒绝，并确认原 rootfs 不被修改。
 - 含 `~` 版本的软件包保留标准 `<name>-<version>.apk` 文件名与内部版本，由真实 APK 工具从本地源读取并严格验证。
 

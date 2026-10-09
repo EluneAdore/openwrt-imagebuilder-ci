@@ -101,7 +101,7 @@ bash scripts/prepare-component-feed.sh <feed-kind> <component-dir> <sdk-dir>
 | [99-custom-defaults](files/etc/uci-defaults/99-custom-defaults) | 首次初始化的网络、IPv6、FullCone、SSH、语言、时区、NTP 和主题设置 |
 | [qemu-ga](files/etc/init.d/qemu-ga) | Guest Agent 的 procd 服务和通道检查 |
 
-组件安装清单和身份约束由构建脚本生成，会覆盖增量清单中同名组件的选择。移除核心组件需要同步调整组件构建与验收规则。覆盖文件中也应保留验收要求的 QGA、FullCone 工具和初始化脚本。
+组件安装清单和身份约束由构建脚本生成，会覆盖增量清单中同名组件的选择，并过滤默认包和 profile 中的同名普通条目，保留定制组件的身份约束。移除核心组件需要同步调整组件构建与验收规则。覆盖文件中也应保留验收要求的 QGA、FullCone 工具和初始化脚本。
 
 常用本地装配变量如下，完整实现见 [build-firmware.sh](scripts/build-firmware.sh)：
 

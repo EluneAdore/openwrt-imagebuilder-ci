@@ -286,7 +286,13 @@ while IFS= read -r constraint; do
         [ "${package_name#-}" = "${constraint_name}" ] || \
             filtered_packages+=("${package_name}")
     done
-    PACKAGE_LIST=("${filtered_packages[@]}" "${constraint}")
+    PACKAGE_LIST=("${filtered_packages[@]}")
+    if [[ "${constraint}" == *@custom\>\<Q1* ]]; then
+        # ImageBuilder 把默认包追加在增量包后，APK 的同名后项会覆盖前项。
+        # -name 仅过滤默认的普通条目，保留 name@custom><Q1... 身份约束。
+        PACKAGE_LIST+=("-${constraint_name}")
+    fi
+    PACKAGE_LIST+=("${constraint}")
 done < <(cat \
     "${HELLOWORLD_COMPONENT_DIR}/install-constraints.txt" \
     "${FULLCONE_RUNTIME_DIR}/install-constraints.txt" \

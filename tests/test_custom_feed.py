@@ -507,11 +507,13 @@ class RuntimeCustomFeedTests(SignedFixture):
             self.assertNotEqual(result.returncode, 0, result.stdout)
         return result
 
-    def install_rootfs(self):
+    def install_rootfs(self, packages=None, official_packages=()):
         rootfs = self.work / "rootfs"
         shutil.copytree(self.overlay, rootfs)
         official = self.work / "official"
         self.make_package(official, name="coremark")
+        for name in official_packages:
+            self.make_package(official, name=name)
         for name, version in zip(self.names, self.versions):
             self.make_package(official, name=name, contents="official replacement\n", version=version)
         official_index = self.signed_index(official)
@@ -523,9 +525,71 @@ class RuntimeCustomFeedTests(SignedFixture):
         constraints = [line for component in self.components
                        for line in (component / "install-constraints.txt").read_text().splitlines()]
         checked(self.apk, "--root", rootfs, "--arch", "x86_64", "--keys-dir", self.trusted_keys,
-                "--repositories-file", self.setup_repos, "--no-network", "add", "--usermode", "--initdb", *constraints)
+                "--repositories-file", self.setup_repos, "--no-network", "add", "--usermode", "--initdb",
+                *(constraints if packages is None else packages))
         (rootfs / "etc/apk/repositories").write_text(official_index.as_uri() + "\n")
         return rootfs
+
+    def test_imagebuilder_default_and_profile_packages_preserve_custom_world(self):
+        if not shutil.which("make"):
+            self.skipTest("缺少 GNU make，无法执行 ImageBuilder 默认包合并回归")
+        candidates = sorted((ROOT / ".work").glob("**/openwrt-imagebuilder-*/Makefile"))
+        source = next((p for p in candidates if "define FormatPackages\n" in p.read_text()), None)
+        if source is None:
+            self.skipTest("缺少已解压的 OpenWrt ImageBuilder Makefile")
+
+        # 执行装配脚本的真实选择逻辑，再由官方 Makefile 合并默认包和 profile 包。
+        config = self.work / "config"
+        config.mkdir()
+        (config / "extra-packages.txt").write_text(
+            "# 保留普通包及移除项；同名定制组件由生成约束接管。\n"
+            + "ordinary\n-dnsmasq\n" + self.names[1] + "\n"
+        )
+        build = (ROOT / "scripts/build-firmware.sh").read_text()
+        selection = build[build.index("PACKAGE_LIST=()"):build.index('\necho "  包含增量包:')]
+        selection_env = self.env | {
+            "CONFIG_DIR": str(config), "WORKSPACE_ROOT": str(self.work),
+            "HELLOWORLD_COMPONENT_DIR": str(self.components[0]),
+            "FULLCONE_RUNTIME_DIR": str(self.components[1]),
+            "FULLCONE_LUCI_DIR": str(self.components[2]),
+        }
+        selected = checked("bash", "-c", "set -euo pipefail\n" + selection
+                           + '\nprintf "%s\\n" "${PACKAGE_LIST[@]}"', env=selection_env).splitlines()
+
+        content = source.read_text()
+        merge = content[content.index("BUILD_PACKAGES:=$(sort"):content.index("# Get ABI version suffix")]
+        function = re.search(r"(?ms)^define FormatPackages\n.*?^endef$", content)
+        self.assertIsNotNone(function)
+        directory = self.work / "imagebuilder-make"
+        directory.mkdir()
+        makefile = directory / "Makefile"
+        makefile.write_text(
+            "CONFIG_USE_APK := y\nUSER_PROFILE := regression\n"
+            + "DEFAULT_PACKAGES := dnsmasq base-files libc " + self.names[1] + "\n"
+            + "regression_PACKAGES := " + self.names[2] + "\n"
+            + "BASE_FILES_VERSION := 1.0-r1\nLIBC_VERSION := 1.0-r1\nKERNEL_VERSION := 1.0-r1\n"
+            + "define GetABISuffix\nendef\n" + merge + function[0] + "\n"
+            + "all:\n\t@" + shlex.quote(sys.executable)
+            + " -c 'import json,sys; print(json.dumps(sys.argv[1:]))'"
+            + " $(call FormatPackages,$(BUILD_PACKAGES))\n"
+        )
+        checked(sys.executable, CONFIGURE, directory)
+        packages = json.loads(checked("make", "--no-print-directory", "-f", makefile,
+                                      "USER_PACKAGES=" + " ".join(selected), cwd=directory))
+
+        self.runtime("stage", self.overlay)
+        rootfs = self.install_rootfs(packages, ("ordinary", "dnsmasq", "base-files", "libc", "kernel"))
+        expected = {line for component in self.components
+                    for line in (component / "install-constraints.txt").read_text().splitlines()}
+        world = (rootfs / "etc/apk/world").read_text().splitlines()
+        self.assertEqual({line for line in world if "@custom" in line}, expected)
+        for name in self.names:
+            self.assertEqual((rootfs / "usr/share" / name).read_text(), "custom\n")
+        self.assertTrue((rootfs / "usr/share/ordinary").is_file())
+        self.assertFalse((rootfs / "usr/share/dnsmasq").exists())
+        for name in ("base-files", "libc", "kernel"):
+            self.assertIn(name + "=1.0-r1", world)
+        self.runtime("verify", rootfs)
 
     def test_stage_and_verify_real_world_without_mutating_rootfs_or_network_dependencies(self):
         self.runtime("stage", self.overlay)
@@ -633,9 +697,12 @@ class RuntimeCustomFeedTests(SignedFixture):
         rootfs = self.install_rootfs()
         world = rootfs / "etc/apk/world"
         lines = world.read_text().splitlines()
+        original = lines[0]
         lines[0] = lines[0].split("><", 1)[0] + "><Q1AAAAAAAAAAAAAAAAAAAAAAAAAAA="
         world.write_text("\n".join(lines) + "\n")
-        self.runtime("verify", rootfs, success=False)
+        result = self.runtime("verify", rootfs, success=False)
+        self.assertIn("world 缺少身份约束: " + original, result.stdout)
+        self.assertIn("world 包含非预期身份约束: " + lines[0], result.stdout)
 
     def test_verify_rejects_missing_embedded_index(self):
         self.runtime("stage", self.overlay)

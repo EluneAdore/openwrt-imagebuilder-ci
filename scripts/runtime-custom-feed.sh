@@ -163,8 +163,13 @@ done
 python3 - "${temporary_dir}/constraints.txt" "${target_dir}/etc/apk/world" <<'PY'
 import pathlib, sys
 expected = {p for p in pathlib.Path(sys.argv[1]).read_text().splitlines() if "@custom" in p}
-actual = {p for p in pathlib.Path(sys.argv[2]).read_text().splitlines() if "@custom" in p}
+world = pathlib.Path(sys.argv[2]).read_text().splitlines()
+actual = {p for p in world if "@custom" in p}
 if actual != expected:
+    for pin in sorted(expected - actual):
+        print("错误: world 缺少身份约束: " + pin, file=sys.stderr)
+    for pin in sorted(actual - expected):
+        print("错误: world 包含非预期身份约束: " + pin, file=sys.stderr)
     raise SystemExit("错误: 最终 rootfs 的 @custom APK 身份约束缺失或不匹配")
 PY
 
