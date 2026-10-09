@@ -5,7 +5,10 @@
 """
 
 import base64
+import contextlib
+import functools
 import hashlib
+import http.server
 import json
 import os
 from pathlib import Path
@@ -15,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 
 
@@ -91,6 +95,32 @@ def index_identity(apk, index, name):
     raise AssertionError(f"签名索引中找不到 {name} 的 APK identity")
 
 
+@contextlib.contextmanager
+def serve_release_assets(directory):
+    """真实下载仅开放模拟 Release 资产，记录 APK 实际请求的文件名。"""
+    requests = []
+
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            requests.append(self.path)
+            super().do_GET()
+
+        def log_message(self, format, *args):
+            pass
+
+    server = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0), functools.partial(Handler, directory=str(directory))
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}", requests
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
 class SignedFixture(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -123,30 +153,30 @@ class SignedFixture(unittest.TestCase):
                 "-out", directory / "public-key.pem")
 
     def make_package(self, directory, name="custom-feed-smoke", contents="custom\n", key=None,
-                     signed=True, compression=None):
+                     signed=True, compression=None, version="1.0-r1"):
         directory.mkdir(parents=True, exist_ok=True)
         payload = self.work / f"payload-{len(list(self.work.glob('payload-*')))}"
         (payload / "usr/share").mkdir(parents=True)
         (payload / "usr/share" / name).write_text(contents)
-        package = directory / f"{name}-1.0-r1.apk"
+        package = directory / f"{name}-{version}.apk"
         args = [self.apk, "mkpkg"]
         if signed:
             args.extend(("--sign-key", key or self.sdk / "private-key.pem"))
         if compression:
             args.extend(("--compression", compression))
-        checked(*args, "--info", f"name:{name}", "--info", "version:1.0-r1",
+        checked(*args, "--info", f"name:{name}", "--info", f"version:{version}",
                 "--info", "arch:x86_64", "--files", payload, "--output", package)
         return package
 
     def make_component(self, kind="helloworld", name="custom-feed-smoke", geodata=False,
-                       signed=True):
+                       signed=True, version="1.0-r1"):
         directory = self.work / kind
-        self.make_package(directory, name=name, signed=signed)
+        self.make_package(directory, name=name, signed=signed, version=version)
         shutil.copyfile(self.sdk / "public-key.pem", directory / KEY_NAMES[kind])
         (directory / "BUILD-INFO.txt").write_text(
             "OpenWrt version: 25.12.5\nArchitecture: x86_64\nComponent interface: 2\n"
         )
-        (directory / "repository-packages.txt").write_text(f"{name}=1.0-r1\n")
+        (directory / "repository-packages.txt").write_text(f"{name}={version}\n")
         (directory / "install-packages.txt").write_text(name + "\n" + ("v2ray-geodata\n" if geodata else ""))
         (directory / "install-constraints.txt").write_text(name + "@custom\n" + ("v2ray-geodata\n" if geodata else ""))
         if kind == "fullcone-runtime":
@@ -169,6 +199,17 @@ class SignedFixture(unittest.TestCase):
         checked(self.apk, "--keys-dir", self.trusted_keys, "mkndx", "--sign-key", self.sdk / "private-key.pem",
                 "--output", index, *sorted(directory.glob("*.apk")))
         return index
+
+    def release_assets(self, directory):
+        """ImageBuilder 保留原 APK 文件名，公网副本必须与索引 name-only 模板一致。"""
+        published = Path(tempfile.mkdtemp(prefix="published-", dir=self.work))
+        for line in (directory / "repository-packages.txt").read_text().splitlines():
+            name, version = line.split("=", 1)
+            shutil.copyfile(directory / f"{name}-{version}.apk", published / f"{name}.apk")
+        for pattern in ("*-packages.adb", "*-public-key.pem"):
+            for path in directory.glob(pattern):
+                shutil.copyfile(path, published / path.name)
+        return published
 
 
 class PrepareComponentFeedTests(SignedFixture):
@@ -211,8 +252,9 @@ class PrepareComponentFeedTests(SignedFixture):
                 self.assertIn(f"{name}-1.0-r1.apk: FAILED", stale.stdout)
                 checked("sha256sum", "--check", "--strict", "SHA256SUMS", cwd=directory)
 
+                published = self.release_assets(directory)
                 repositories = self.work / f"{kind}-install-repositories"
-                repositories.write_text("@custom " + index.as_uri() + "\n")
+                repositories.write_text("@custom " + (published / index.name).as_uri() + "\n")
                 install_root = self.work / f"{kind}-install-root"
                 install_root.mkdir()
                 checked(self.apk, "--root", install_root, "--arch", "x86_64",
@@ -283,6 +325,7 @@ class PrepareComponentFeedTests(SignedFixture):
                 keys.mkdir()
                 shutil.copyfile(self.sdk / "public-key.pem", keys / "fixture.pem")
                 checked(self.apk, "--keys-dir", keys, "verify", index)
+                self.assertIn("pkgname-spec: ${name}.apk", checked(self.apk, "adbdump", index))
                 self.assertEqual((directory / "runtime-repository.url").read_text().strip(),
                                  f"{release_url(kind)}/{kind}-packages.adb")
                 constraints = (directory / "install-constraints.txt").read_text().splitlines()
@@ -334,6 +377,10 @@ class PrepareComponentFeedTests(SignedFixture):
         directory = self.make_component()
         (directory / "custom-feed-smoke-1.0-r1.apk").rename(directory / "wrong-1.0-r1.apk")
         write_checksums(directory)
+        self.prepare(directory, success=False)
+
+    def test_rejects_package_name_github_would_rename(self):
+        directory = self.make_component(name="unsafe+release-name")
         self.prepare(directory, success=False)
 
     def test_rejects_undeclared_apk(self):
@@ -525,7 +572,8 @@ class RuntimeCustomFeedTests(SignedFixture):
             self.prepare(component, kind)
             self.components.append(component)
             self.names.append(name)
-            self.mapping[(component / "runtime-repository.url").read_text().strip()] = str(component / f"{kind}-packages.adb")
+            published = self.release_assets(component)
+            self.mapping[(component / "runtime-repository.url").read_text().strip()] = str(published / f"{kind}-packages.adb")
         self.transport_map = self.work / "transport-map.json"
         self.transport_map.write_text(json.dumps(self.mapping))
         mock_bin = self.work / "transport-bin"
@@ -643,7 +691,7 @@ class RuntimeCustomFeedTests(SignedFixture):
 
 
 GH_MOCK = '''#!/usr/bin/env python3
-import json, os, sys
+import json, os, shutil, sys
 from pathlib import Path
 args = sys.argv[1:]
 with Path(os.environ["GH_MOCK_LOG"]).open("a") as log:
@@ -671,23 +719,32 @@ if args and args[0] == "api":
     print(json.dumps({"private": False, "visibility": "public"}))
     sys.exit(0)
 if args[:2] == ["release", "view"]:
-    calls = [json.loads(line) for line in Path(os.environ["GH_MOCK_LOG"]).read_text().splitlines()]
-    assets = []
-    for call in calls:
-        if call[:2] == ["release", "upload"]:
-            for arg in call[3:]:
-                path = Path(arg)
-                if path.is_file():
-                    assets.append({"name": path.name, "size": path.stat().st_size})
+    published = Path(os.environ["GH_MOCK_ASSET_DIR"])
+    assets = [{"name": path.name, "size": path.stat().st_size}
+              for path in sorted(published.iterdir()) if path.is_file()]
     if os.environ.get("GH_MOCK_MISSING_ASSET") == "1":
         assets = assets[:-1]
     if os.environ.get("GH_MOCK_WRONG_ASSET_SIZE") == "1":
         assets[0]["size"] += 1
     print(json.dumps({"isDraft": True, "assets": assets}))
     sys.exit(0)
-if args[:2] == ["release", "upload"] and os.environ.get("GH_MOCK_FAIL_UPLOAD") == "1":
-    print("fixture upload failed", file=sys.stderr)
-    sys.exit(1)
+if args[:2] == ["release", "upload"]:
+    if os.environ.get("GH_MOCK_FAIL_UPLOAD") == "1":
+        print("fixture upload failed", file=sys.stderr)
+        sys.exit(1)
+    published = Path(os.environ["GH_MOCK_ASSET_DIR"])
+    for arg in args[3:]:
+        path = Path(arg)
+        if path.is_file():
+            # GitHub Release 上传 API 会改名；~ 版本是此次真实 CI 的触发条件。
+            name = path.name.replace("~", ".")
+            if os.environ.get("GH_MOCK_RENAME_ASSET") == "1" and path.suffix == ".apk":
+                name = "renamed-" + name
+            target = published / name
+            if target.exists():
+                print("gh: already_exists (HTTP 422)", file=sys.stderr)
+                sys.exit(1)
+            shutil.copyfile(path, target)
 if args[:2] == ["release", "create"]:
     print("https://github.com/example/router/releases/tag/component-fixture")
 sys.exit(0)
@@ -705,9 +762,12 @@ class PublishComponentFeedTests(SignedFixture):
         gh.write_text(GH_MOCK)
         gh.chmod(0o755)
         self.log = self.work / "gh-calls.jsonl"
+        self.published = self.work / "release-assets"
+        self.published.mkdir()
         self.publish_tag = RELEASE_TAG
         self.env.update({"PATH": str(mock_bin) + os.pathsep + os.environ["PATH"],
-                         "GH_MOCK_LOG": str(self.log), "GH_TOKEN": "fixture-token",
+                         "GH_MOCK_LOG": str(self.log), "GH_MOCK_ASSET_DIR": str(self.published),
+                         "GH_TOKEN": "fixture-token",
                          "GITHUB_REPOSITORY": "example/router", "GH_REPO": "example/router",
                          "GITHUB_SHA": "0123456789abcdef0123456789abcdef01234567"})
 
@@ -735,11 +795,78 @@ class PublishComponentFeedTests(SignedFixture):
         self.assertIn("--latest=false", calls[edits[0]])
         assets = [Path(arg).name for i in uploads for arg in calls[i]
                   if arg.endswith((".apk", "-packages.adb", "-public-key.pem"))]
-        expected = {"custom-feed-smoke-1.0-r1.apk", "helloworld-packages.adb", "helloworld-public-key.pem"}
+        expected = {"custom-feed-smoke.apk", "helloworld-packages.adb", "helloworld-public-key.pem"}
         self.assertEqual(set(assets), expected)
         self.assertEqual(len(assets), len(expected))
         self.assertNotIn("--clobber", [arg for call in calls for arg in call])
         self.assertFalse(any("private-key" in arg for call in calls for arg in call))
+
+    def test_tilde_version_release_downloads_name_only_apk_without_changing_identity(self):
+        # 与真实 LuCI/FullCone 日期版本一致，GitHub API 会改名 canonical 文件中的 ~。
+        version = "2026.10.09~abcdef123-r1"
+        name = "custom-feed-smoke"
+        shutil.rmtree(self.component)
+        self.component = self.make_component(version=version)
+        canonical = self.component / f"{name}-{version}.apk"
+        original_package = canonical.read_bytes()
+        original_index = self.work / "original-index.adb"
+        checked(self.apk, "--keys-dir", self.trusted_keys, "mkndx", "--sign-key",
+                self.sdk / "private-key.pem", "--output", original_index, canonical)
+        original_identity = index_identity(self.apk, original_index, name)
+
+        prepared = self.prepare(self.component)
+        self.assertNotIn("not matching package name specification", prepared.stdout)
+        result = self.publish()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        uploaded = self.published / f"{name}.apk"
+        self.assertEqual(uploaded.read_bytes(), original_package)
+        self.assertEqual(canonical.read_bytes(), original_package)
+        self.assertFalse((self.component / f"{name}.apk").exists())
+        self.assertFalse((self.published / canonical.name).exists())
+        self.assertFalse((self.published / canonical.name.replace("~", ".")).exists())
+        self.assertEqual(index_identity(self.apk, self.published / "helloworld-packages.adb", name),
+                         original_identity)
+        dump = checked(self.apk, "adbdump", self.published / "helloworld-packages.adb")
+        self.assertIn(f"    version: {version}\n", dump)
+        self.assertIn("pkgname-spec: ${name}.apk\n", dump)
+        checked(self.apk, "--keys-dir", self.trusted_keys, "verify", uploaded,
+                self.published / "helloworld-packages.adb")
+        checked("sha256sum", "--check", "--strict", "SHA256SUMS", cwd=self.component)
+
+        install_root = self.work / "http-install-root"
+        install_root.mkdir()
+        repositories = self.work / "http-repositories"
+        pin = f"{name}@custom><{original_identity}"
+        with serve_release_assets(self.published) as (base_url, requests):
+            repositories.write_text(f"@custom {base_url}/helloworld-packages.adb\n")
+            checked(self.apk, "--root", install_root, "--arch", "x86_64", "--keys-dir",
+                    self.trusted_keys, "--repositories-file", repositories, "--no-cache",
+                    "add", "--usermode", "--initdb", pin)
+        self.assertIn("/helloworld-packages.adb", requests)
+        self.assertIn(f"/{name}.apk", requests)
+        self.assertFalse(any("~" in path or version in path for path in requests), requests)
+        self.assertEqual((install_root / "usr/share" / name).read_text(), "custom\n")
+        self.assertEqual((install_root / "etc/apk/world").read_text().strip(), pin)
+        self.assertRegex((install_root / "lib/apk/db/installed").read_text(),
+                         r"(?m)^V:" + re.escape(version) + r"$")
+
+    def test_mock_reproduces_github_tilde_filename_renaming(self):
+        asset = self.work / "legacy-1.0~abcdef.apk"
+        asset.write_bytes(b"fixture release asset")
+        checked("gh", "release", "upload", RELEASE_TAG, asset, "--repo", "example/router",
+                env=self.env)
+        view = json.loads(checked("gh", "release", "view", RELEASE_TAG, "--json", "assets",
+                                  env=self.env))
+        self.assertEqual(view["assets"], [{"name": "legacy-1.0.abcdef.apk", "size": asset.stat().st_size}])
+
+    def test_server_side_asset_rename_keeps_release_unpublished(self):
+        self.env["GH_MOCK_RENAME_ASSET"] = "1"
+        result = self.publish()
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertTrue(any(call[:2] == ["release", "upload"] for call in self.calls()))
+        self.assertFalse(any(call[:2] == ["release", "edit"] for call in self.calls()))
+        self.assertIn("custom-feed-smoke.apk", result.stdout)
+        self.assertIn("renamed-custom-feed-smoke.apk", result.stdout)
 
     def test_existing_tag_is_rejected_before_release_creation(self):
         self.env["GH_MOCK_EXISTING_TAG"] = "1"
@@ -755,7 +882,7 @@ class PublishComponentFeedTests(SignedFixture):
             component = self.make_component(kind, name=kind + "-smoke")
             self.prepare(component, kind)
             components.append(component)
-            expected.update({kind + "-smoke-1.0-r1.apk", kind + "-packages.adb", KEY_NAMES[kind]})
+            expected.update({kind + "-smoke.apk", kind + "-packages.adb", KEY_NAMES[kind]})
         result = self.publish(*components)
         self.assertEqual(result.returncode, 0, result.stdout)
         calls = self.calls()
@@ -784,6 +911,18 @@ class PublishComponentFeedTests(SignedFixture):
         shutil.copytree(self.component, duplicate)
         result = self.publish(self.component, duplicate)
         self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertFalse(any(call[:2] == ["release", "create"] for call in self.calls()))
+
+    def test_same_package_name_with_different_component_versions_is_rejected_before_create(self):
+        self.publish_tag = FULLCONE_TAG
+        components = []
+        for kind, version in (("fullcone-runtime", "1.0-r1"), ("fullcone-luci", "2.0-r1")):
+            component = self.make_component(kind, name="shared-package", version=version)
+            self.prepare(component, kind)
+            components.append(component)
+        result = self.publish(*components)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("shared-package.apk", result.stdout)
         self.assertFalse(any(call[:2] == ["release", "create"] for call in self.calls()))
 
     def test_private_key_in_component_is_rejected_before_create(self):

@@ -80,8 +80,11 @@ PY
     python3 - "${component_dir}/install-constraints.txt" "${temporary_dir}/index.txt" <<'PY'
 import base64, pathlib, re, sys
 constraints = pathlib.Path(sys.argv[1]).read_text().splitlines()
+index_lines = pathlib.Path(sys.argv[2]).read_text().splitlines()
+if [line for line in index_lines if line.startswith("pkgname-spec:")] != ["pkgname-spec: ${name}.apk"]:
+    raise SystemExit("错误: APK 索引必须使用固定发布文件名 ${name}.apk，请重新构建组件")
 entries, current = {}, None
-for line in pathlib.Path(sys.argv[2]).read_text().splitlines():
+for line in index_lines:
     match = re.fullmatch(r"  - name: (\S+)", line)
     if match:
         current = match[1]

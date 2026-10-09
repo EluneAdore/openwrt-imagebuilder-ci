@@ -20,12 +20,13 @@ temporary_dir="$(mktemp -d)"
 trap 'rm -rf "${temporary_dir}"' EXIT
 assets=()
 declare -A asset_names=()
+component_number=0
 for component_dir in "$@"; do
     [ -d "${component_dir}" ] || die "组件目录不存在: ${component_dir}"
     component_dir="$(cd "${component_dir}" && pwd)"
     [ -s "${component_dir}/SHA256SUMS" ] && [ -s "${component_dir}/runtime-repository.url" ] || die "组件尚未准备软件源"
     # 只允许公开运行时必需的 APK、签名索引与公钥，不上传私钥及其他 SDK 文件。
-    python3 - "${component_dir}" "${repository}" "${release_tag}" <<'PY'
+    python3 - "${component_dir}" "${repository}" "${release_tag}" > "${temporary_dir}/package-map.tsv" <<'PY'
 import pathlib, re, sys
 root, repo, tag = pathlib.Path(sys.argv[1]), sys.argv[2], sys.argv[3]
 def fail(message):
@@ -49,6 +50,7 @@ for line in (root / "SHA256SUMS").read_text().splitlines():
         fail("SHA256SUMS 包含非法或重复路径")
     seen.add(name)
 required = {p.name for pattern in ("*.apk", "*-packages.adb", "*-public-key.pem") for p in root.glob(pattern)}
+required.add("repository-packages.txt")
 if not required <= seen or index not in required:
     fail("SHA256SUMS 未覆盖全部发布资产")
 for name in required:
@@ -59,10 +61,28 @@ for name in required:
         content = path.read_text()
         if "PRIVATE KEY" in content or not content.startswith("-----BEGIN PUBLIC KEY-----\n"):
             fail("发布公钥不是有效的公钥 PEM")
+packages = {p.name for p in root.glob("*.apk")}
+declared = {}
+for line in (root / "repository-packages.txt").read_text().splitlines():
+    match = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9_.-]*)=(\S+)", line)
+    if not match or match[1] in declared:
+        fail("repository-packages.txt 包含非法或重复条目，发布包名必须适合 GitHub 资产文件名")
+    declared[match[1]] = match[1] + "-" + match[2] + ".apk"
+if set(declared.values()) != packages:
+    fail("APK 与 repository-packages.txt 不是一一对应")
+for name, filename in declared.items():
+    print(filename, name + ".apk", sep="\t")
 PY
     (cd "${component_dir}" && sha256sum --check --strict SHA256SUMS) || die "发布前组件 SHA-256 校验失败"
+    # 别名副本不修改 APK 内容和内部版本；索引的 pkgname-spec 同步使用包名.apk。
+    component_number=$((component_number + 1))
+    upload_dir="${temporary_dir}/component-${component_number}"
+    mkdir -p "${upload_dir}"
+    while IFS=$'\t' read -r source_name published_name; do
+        cp "${component_dir}/${source_name}" "${upload_dir}/${published_name}"
+    done < "${temporary_dir}/package-map.tsv"
     shopt -s nullglob
-    component_assets=("${component_dir}"/*.apk "${component_dir}"/*-packages.adb "${component_dir}"/*-public-key.pem)
+    component_assets=("${upload_dir}"/*.apk "${component_dir}"/*-packages.adb "${component_dir}"/*-public-key.pem)
     shopt -u nullglob
     apk_count=0
     index_count=0
@@ -114,8 +134,23 @@ python3 - "${temporary_dir}/release.json" "${assets[@]}" <<'PY'
 import json, pathlib, sys
 release = json.loads(pathlib.Path(sys.argv[1]).read_text())
 expected = {pathlib.Path(p).name: pathlib.Path(p).stat().st_size for p in sys.argv[2:]}
-actual = {p["name"]: p["size"] for p in release.get("assets", [])}
-if not release.get("isDraft") or actual != expected or len(release.get("assets", [])) != len(expected):
+assets = release.get("assets", [])
+actual = {p["name"]: p["size"] for p in assets}
+errors = []
+if not release.get("isDraft"):
+    errors.append("Release 已非草稿")
+if len(actual) != len(assets):
+    errors.append("存在重名资产")
+if expected.keys() - actual.keys():
+    errors.append("缺少资产: " + ", ".join(sorted(expected.keys() - actual.keys())))
+if actual.keys() - expected.keys():
+    errors.append("非预期资产: " + ", ".join(sorted(actual.keys() - expected.keys())))
+for name in sorted(expected.keys() & actual.keys()):
+    if actual[name] != expected[name]:
+        errors.append(f"资产大小不符: {name} (期望 {expected[name]}，实际 {actual[name]})")
+if errors:
+    for error in errors:
+        print("错误: " + error, file=sys.stderr)
     raise SystemExit("错误: 草稿 Release 资产缺失、重复或大小不符，拒绝公开")
 PY
 gh release edit "${release_tag}" --repo "${repository}" --draft=false --latest=false || die "公开组件 Release 失败"

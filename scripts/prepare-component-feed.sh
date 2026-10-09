@@ -89,7 +89,7 @@ fi
 
 temporary_dir="$(mktemp -d "${component_dir}/.prepare-feed.XXXXXX")"
 trap 'rm -rf "${temporary_dir}"' EXIT
-mkdir -p "${temporary_dir}/keys"
+mkdir -p "${temporary_dir}/keys" "${temporary_dir}/published-packages"
 cp "${component_dir}/${public_key_name}" "${temporary_dir}/keys/${public_key_name}"
 openssl pkey -pubin -in "${component_dir}/${public_key_name}" -outform DER \
     -out "${temporary_dir}/component-public.der" 2>/dev/null || die "组件公钥无效"
@@ -132,17 +132,29 @@ for line in pathlib.Path(sys.argv[2]).read_text().splitlines():
             raise SystemExit("错误: APK 元数据字段重复")
         fields[match[1]] = match[2]
 name, version, arch = (fields.get(key, "") for key in ("name", "version", "arch"))
-if not name or not version or arch not in {"x86_64", "all", "noarch"}:
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) or not version or arch not in {"x86_64", "all", "noarch"}:
     raise SystemExit("错误: APK 名称、版本或架构无效")
 if sys.argv[1] != name + "-" + version + ".apk":
     raise SystemExit("错误: APK 文件名与 name-version.apk 不一致")
 print(name, version, sep="\t")
 PY
 done
+# GitHub 会改写含 ~ 等特殊字符的资产名。每个快照只有同名包的一个版本，
+# 发布使用包名.apk；组件归档仍保留 ImageBuilder 需要的 name-version.apk。
+published_packages=()
+while IFS=$'\t' read -r package_name package_version; do
+    published_package="${temporary_dir}/published-packages/${package_name}.apk"
+    [ ! -e "${published_package}" ] || die "同一组件包含重复包名: ${package_name}"
+    cp "${temporary_dir}/${package_name}-${package_version}.apk" "${published_package}"
+    published_packages+=("${published_package}")
+done < "${temporary_dir}/apk-metadata.tsv"
+# 这里的 ${name} 是 APK 索引模板变量，不能由 shell 展开。
+# shellcheck disable=SC2016
 "${apk_tool}" --keys-dir "${temporary_dir}/keys" mkndx \
     --sign-key "${sdk_dir}/private-key.pem" \
+    --pkgname-spec '${name}.apk' \
     --description "OpenWrt ${build_version} ${feed_kind} x86_64" \
-    --output "${temporary_dir}/${index_name}" "${prepared_packages[@]}" || die "生成签名 APK 索引失败"
+    --output "${temporary_dir}/${index_name}" "${published_packages[@]}" || die "生成签名 APK 索引失败"
 "${apk_tool}" --keys-dir "${temporary_dir}/keys" verify "${temporary_dir}/${index_name}" || die "APK 索引签名校验失败"
 "${apk_tool}" --keys-dir "${temporary_dir}/keys" adbdump "${temporary_dir}/${index_name}" > "${temporary_dir}/index.txt" || die "无法读取 APK 索引"
 
@@ -152,6 +164,9 @@ import base64, pathlib, re, sys
 root, temporary = map(pathlib.Path, sys.argv[1:])
 def fail(message):
     raise SystemExit("错误: " + message)
+index_lines = (temporary / "index.txt").read_text().splitlines()
+if [line for line in index_lines if line.startswith("pkgname-spec:")] != ["pkgname-spec: ${name}.apk"]:
+    fail("APK 索引必须使用固定发布文件名 ${name}.apk")
 actual = {}
 for line in (temporary / "apk-metadata.tsv").read_text().splitlines():
     name, version = line.split("\t")
@@ -167,7 +182,7 @@ for line in (root / "repository-packages.txt").read_text().splitlines():
 if actual != declared:
     fail("APK 与 repository-packages.txt 不是一一对应")
 entries, current = {}, None
-for line in (temporary / "index.txt").read_text().splitlines():
+for line in index_lines:
     match = re.fullmatch(r"  - name: (\S+)", line)
     if match:
         current = match[1]

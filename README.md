@@ -165,6 +165,8 @@ OPENWRT_VERSION=25.12.5 ROOTFS_PARTSIZE=4096 make build  # 沿用已解压组件
 
 固件内的 `/etc/apk/repositories.d/custom-components.list` 包含三行 `@custom https://github.com/.../releases/download/.../*-packages.adb`，对应公钥位于 `/etc/apk/keys/`。不必额外设置 `CUSTOM_SIGNING_KEY`：每次 SDK 生成的签名公钥会随其快照固定进入固件；如需统一签名身份，可继续设置此可选 secret。索引和 APK 均验证签名，元数据、安装约束、URL、公钥与索引也进入 SHA256 清单。
 
+Release 中的 APK 使用 `<包名>.apk`，签名索引通过 `pkgname-spec: ${name}.apk` 指向这些资产。组件归档及 ImageBuilder 本地仓库仍保留 `<包名>-<版本>.apk`；两份 APK 内容相同，内部版本及身份约束不变。这样可避免 [GitHub 自动改写特殊字符文件名](https://docs.github.com/en/rest/releases/assets#upload-a-release-asset)，例如把版本中的 `~` 改成 `.`，造成索引指向不存在的资产。每个快照的同名包只允许一个版本，多个组件的发布包名冲突会在创建草稿前拒绝。
+
 定制包使用 `name@custom><Q1...=` 形式固定 APK 身份。装配脚本会先调整本地 ImageBuilder 的 `FormatPackages`，将完整约束作为一个参数传给 APK，避免摘要末尾的 `=` 被拆分或 `><` 被 shell 解释；普通包的版本与 ABI 后缀处理保留原有逻辑。无法识别的 ImageBuilder 格式会阻止构建。
 
 部署新固件后可检查并验证：
@@ -179,7 +181,7 @@ apk add --simulate coremark
 
 维护时不要删除仍被固件引用的软件源 Release、tag 或资产，也不要将仓库改名、转为私有或修改发布资产。Actions Artifact 到期不会影响已发布软件源，但删除 Release 会让对应固件失去该源。旧固件不会因为仓库代码更新自动修复；推荐重新构建并部署完整新固件。若需手工恢复旧固件，必须拿到其原始组件 APK / 索引、匹配的签名公钥及精确 kernel ABI，单纯换成某次新构建的 URL 不能保证安全。
 
-本次 37 项回归已在本地通过，使用真实 APK v3 工具验证未签名 SDK 产物的补签、损坏包与签名失败的拒绝、索引和身份约束，覆盖普通包安装 / 升级时保持定制包身份、缺失 `@custom` 标签的原始故障，以及 ImageBuilder 参数传递。运行时源和发布流程测试使用本地 HTTPS 下载映射与 `gh` 替身，验证配置、公钥、world、资产完整性和失败阻断。此次 CI 已完成两个组件编译，软件源准备时因缺少 APK 签名而失败；**补签修复后的真实发布与完整固件装配仍需新的公开 CI 运行验证**。本地测试通过不表示软件源已经上线，详细测试范围和运行命令见 [仓库分析的验证边界](docs/repository-analysis.md#验证边界)。
+本次 42 项回归已在本地通过，使用真实 APK v3 工具验证 SDK 产物补签、索引和身份约束、普通包安装 / 升级时保持定制身份，以及 ImageBuilder 参数传递。发布测试的 `gh` 替身模拟 GitHub 对 `~` 文件名的改写；另通过真实本地 HTTP 下载并安装含 `~` 版本的 APK，确认仅请求 `<包名>.apk`，版本、签名和身份不变。运行时源测试使用本地 HTTPS 下载映射，检查配置、公钥、world 及失败阻断。[最新 CI 37908224118](https://github.com/EluneAdore/openwrt-imagebuilder-ci/actions/runs/37908224118) 已完成两个组件编译、APK 补签和索引验签，随后因 GitHub 改写资产名而拒绝公开草稿。**发布文件名修复后的真实发布与完整固件装配仍需新的公开 CI 运行验证**；本地测试通过不表示软件源已经上线。详细范围和命令见 [仓库分析的验证边界](docs/repository-analysis.md#验证边界)。
 
 主工作流的 firmware job 在装配后指定同版 ImageBuilder 的 APK 工具运行这些回归；检查通过后才生成发布元数据、上传固件 Artifact，并按 `publish_release` 开关发布固件。
 
