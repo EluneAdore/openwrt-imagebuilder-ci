@@ -101,9 +101,27 @@ cmp -s "${temporary_dir}/component-public.der" "${temporary_dir}/sdk-public.der"
 cmp -s "${temporary_dir}/signing-public.der" "${temporary_dir}/sdk-public.der" || die "SDK 签名私钥与公钥不一致"
 
 : > "${temporary_dir}/apk-metadata.tsv"
+prepared_packages=()
 for package_file in "${package_files[@]}"; do
-    "${apk_tool}" --keys-dir "${temporary_dir}/keys" verify "${package_file}" || die "APK 签名或完整性校验失败"
-    "${apk_tool}" --keys-dir "${temporary_dir}/keys" adbdump "${package_file}" > "${temporary_dir}/package.txt" || die "无法读取 APK 元数据"
+    prepared_package="${temporary_dir}/${package_file##*/}"
+    cp "${package_file}" "${prepared_package}"
+    "${apk_tool}" adbdump "${prepared_package}" > "${temporary_dir}/package.txt" || die "无法读取 APK 元数据"
+    if ! "${apk_tool}" --keys-dir "${temporary_dir}/keys" verify "${prepared_package}" > "${temporary_dir}/verify.log" 2>&1; then
+        # OpenWrt 单包 compile 的 mkpkg 不签名；SDK 有密钥不代表 APK 已签名。
+        # 已存在签名却不可信的 APK 必须拒绝，不能通过追加本地签名掩盖错误。
+        if grep -q '^# sig ' "${temporary_dir}/package.txt"; then
+            cat "${temporary_dir}/verify.log" >&2
+            die "已有 APK 签名或完整性校验失败，拒绝重新签名"
+        fi
+        # 此选项只用于校验和首次签署本次 SDK 的未签名构建产物。
+        # 发布索引和运行时验签不允许使用它。
+        "${apk_tool}" --keys-dir "${temporary_dir}/keys" --allow-untrusted verify "${prepared_package}" || die "未签名 APK 内容完整性校验失败"
+        "${apk_tool}" --keys-dir "${temporary_dir}/keys" --allow-untrusted adbsign \
+            --sign-key "${sdk_dir}/private-key.pem" "${prepared_package}" || die "APK 签名失败"
+    fi
+    # apk-tools 3.0.5 adbsign 可能报错仍返回 0，必须独立严格验签确认。
+    "${apk_tool}" --keys-dir "${temporary_dir}/keys" verify "${prepared_package}" || die "APK 签名或完整性校验失败"
+    prepared_packages+=("${prepared_package}")
     python3 - "${package_file##*/}" "${temporary_dir}/package.txt" >> "${temporary_dir}/apk-metadata.tsv" <<'PY'
 import pathlib, re, sys
 fields = {}
@@ -124,7 +142,7 @@ done
 "${apk_tool}" --keys-dir "${temporary_dir}/keys" mkndx \
     --sign-key "${sdk_dir}/private-key.pem" \
     --description "OpenWrt ${build_version} ${feed_kind} x86_64" \
-    --output "${temporary_dir}/${index_name}" "${package_files[@]}" || die "生成签名 APK 索引失败"
+    --output "${temporary_dir}/${index_name}" "${prepared_packages[@]}" || die "生成签名 APK 索引失败"
 "${apk_tool}" --keys-dir "${temporary_dir}/keys" verify "${temporary_dir}/${index_name}" || die "APK 索引签名校验失败"
 "${apk_tool}" --keys-dir "${temporary_dir}/keys" adbdump "${temporary_dir}/${index_name}" > "${temporary_dir}/index.txt" || die "无法读取 APK 索引"
 
@@ -189,7 +207,7 @@ for name, constraint in zip(packages, constraints):
 (temporary / "install-constraints.txt").write_text("\n".join(new_constraints) + "\n")
 PY
 printf '%s/%s\n' "${release_base_url}" "${index_name}" > "${temporary_dir}/runtime-repository.url"
-checksum_files=("${package_files[@]##*/}" BUILD-INFO.txt repository-packages.txt install-packages.txt "${public_key_name}")
+checksum_files=(BUILD-INFO.txt repository-packages.txt install-packages.txt "${public_key_name}")
 [ ! -f "${component_dir}/kernel-dependency.txt" ] || checksum_files+=(kernel-dependency.txt)
 (
     cd "${component_dir}"
@@ -197,8 +215,11 @@ checksum_files=("${package_files[@]##*/}" BUILD-INFO.txt repository-packages.txt
 ) > "${temporary_dir}/SHA256SUMS"
 (
     cd "${temporary_dir}"
-    sha256sum "${index_name}" runtime-repository.url install-constraints.txt
+    sha256sum "${prepared_packages[@]##*/}" "${index_name}" runtime-repository.url install-constraints.txt
 ) >> "${temporary_dir}/SHA256SUMS"
+for prepared_package in "${prepared_packages[@]}"; do
+    mv -f "${prepared_package}" "${component_dir}/${prepared_package##*/}"
+done
 mv -f "${temporary_dir}/${index_name}" "${component_dir}/${index_name}"
 mv -f "${temporary_dir}/runtime-repository.url" "${component_dir}/runtime-repository.url"
 mv -f "${temporary_dir}/install-constraints.txt" "${component_dir}/install-constraints.txt"

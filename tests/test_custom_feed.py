@@ -122,20 +122,26 @@ class SignedFixture(unittest.TestCase):
         checked("openssl", "pkey", "-in", directory / "private-key.pem", "-pubout",
                 "-out", directory / "public-key.pem")
 
-    def make_package(self, directory, name="custom-feed-smoke", contents="custom\n", key=None):
+    def make_package(self, directory, name="custom-feed-smoke", contents="custom\n", key=None,
+                     signed=True, compression=None):
         directory.mkdir(parents=True, exist_ok=True)
         payload = self.work / f"payload-{len(list(self.work.glob('payload-*')))}"
         (payload / "usr/share").mkdir(parents=True)
         (payload / "usr/share" / name).write_text(contents)
         package = directory / f"{name}-1.0-r1.apk"
-        checked(self.apk, "mkpkg", "--sign-key", key or self.sdk / "private-key.pem",
-                "--info", f"name:{name}", "--info", "version:1.0-r1",
+        args = [self.apk, "mkpkg"]
+        if signed:
+            args.extend(("--sign-key", key or self.sdk / "private-key.pem"))
+        if compression:
+            args.extend(("--compression", compression))
+        checked(*args, "--info", f"name:{name}", "--info", "version:1.0-r1",
                 "--info", "arch:x86_64", "--files", payload, "--output", package)
         return package
 
-    def make_component(self, kind="helloworld", name="custom-feed-smoke", geodata=False):
+    def make_component(self, kind="helloworld", name="custom-feed-smoke", geodata=False,
+                       signed=True):
         directory = self.work / kind
-        self.make_package(directory, name=name)
+        self.make_package(directory, name=name, signed=signed)
         shutil.copyfile(self.sdk / "public-key.pem", directory / KEY_NAMES[kind])
         (directory / "BUILD-INFO.txt").write_text(
             "OpenWrt version: 25.12.5\nArchitecture: x86_64\nComponent interface: 2\n"
@@ -166,12 +172,112 @@ class SignedFixture(unittest.TestCase):
 
 
 class PrepareComponentFeedTests(SignedFixture):
+    def test_unsigned_sdk_packages_are_signed_before_indexing_for_each_component(self):
+        for kind in KEY_NAMES:
+            with self.subTest(kind=kind):
+                name = kind + "-unsigned-smoke"
+                directory = self.make_component(kind, name, signed=False)
+                package = directory / f"{name}-1.0-r1.apk"
+                original_bytes = package.read_bytes()
+                original_checksums = self.work / f"{kind}-original-SHA256SUMS"
+                original_checksums.write_bytes((directory / "SHA256SUMS").read_bytes())
+                unsigned_verification = run(self.apk, "--keys-dir", self.trusted_keys,
+                                            "verify", package)
+                self.assertNotEqual(unsigned_verification.returncode, 0)
+                self.assertIn("UNTRUSTED signature", unsigned_verification.stdout)
+                # SDK 的无签名产物仍必须通过 payload 完整性校验。
+                checked(self.apk, "--allow-untrusted", "verify", package)
+                unsigned_index = self.work / f"{kind}-unsigned-index.adb"
+                checked(self.apk, "--allow-untrusted", "mkndx", "--sign-key",
+                        self.sdk / "private-key.pem", "--output", unsigned_index, package)
+                original_identity = index_identity(self.apk, unsigned_index, name)
+
+                self.prepare(directory, kind)
+
+                checked(self.apk, "--keys-dir", self.trusted_keys, "verify", package)
+                index = directory / f"{kind}-packages.adb"
+                checked(self.apk, "--keys-dir", self.trusted_keys, "verify", index)
+                self.assertNotEqual(package.read_bytes(), original_bytes)
+                self.assertNotEqual(hashlib.sha256(package.read_bytes()).digest(),
+                                    hashlib.sha256(original_bytes).digest())
+                # 加签改变 APK 文件和 file-size，但保留 ADB 内容的安装身份。
+                identity = index_identity(self.apk, index, name)
+                self.assertEqual(identity, original_identity)
+                pin = f"{name}@custom><{identity}"
+                self.assertEqual((directory / "install-constraints.txt").read_text().strip(), pin)
+                stale = run("sha256sum", "--check", "--strict", original_checksums,
+                            cwd=directory)
+                self.assertNotEqual(stale.returncode, 0)
+                self.assertIn(f"{name}-1.0-r1.apk: FAILED", stale.stdout)
+                checked("sha256sum", "--check", "--strict", "SHA256SUMS", cwd=directory)
+
+                repositories = self.work / f"{kind}-install-repositories"
+                repositories.write_text("@custom " + index.as_uri() + "\n")
+                install_root = self.work / f"{kind}-install-root"
+                install_root.mkdir()
+                checked(self.apk, "--root", install_root, "--arch", "x86_64",
+                        "--keys-dir", self.trusted_keys, "--repositories-file", repositories,
+                        "--no-network", "add", "--usermode", "--initdb", pin)
+                self.assertEqual((install_root / "usr/share" / name).read_text(), "custom\n")
+                self.assertEqual((install_root / "etc/apk/world").read_text().strip(), pin)
+
+    def test_preparing_previously_unsigned_package_again_preserves_signed_apk_and_identity(self):
+        directory = self.make_component(signed=False)
+        self.prepare(directory)
+        package = directory / "custom-feed-smoke-1.0-r1.apk"
+        signed_bytes = package.read_bytes()
+        first_constraints = (directory / "install-constraints.txt").read_bytes()
+        self.prepare(directory)
+        self.assertEqual(package.read_bytes(), signed_bytes)
+        self.assertEqual((directory / "install-constraints.txt").read_bytes(), first_constraints)
+        checked(self.apk, "--keys-dir", self.trusted_keys, "verify", package)
+        checked("sha256sum", "--check", "--strict", "SHA256SUMS", cwd=directory)
+
+    def test_rejects_adbsign_success_without_signature_atomically(self):
+        directory = self.make_component(signed=False)
+        package = directory / "custom-feed-smoke-1.0-r1.apk"
+        original_package = package.read_bytes()
+        original_checksums = (directory / "SHA256SUMS").read_bytes()
+        # apk-tools 3.0.5 adbsign 在报错时仍可能返回 0；验证不能只看退出码。
+        wrapper = self.sdk / "staging_dir/host/bin/apk"
+        wrapper.write_text(
+            "#!/usr/bin/env python3\nimport subprocess, sys\n"
+            "if 'adbsign' in sys.argv[1:]:\n"
+            "    print('fixture adbsign failed but returned success', file=sys.stderr)\n"
+            "    sys.exit(0)\n"
+            "sys.exit(subprocess.call([" + repr(str(self.apk)) + "] + sys.argv[1:]))\n"
+        )
+        result = self.prepare(directory, success=False)
+        self.assertIn("APK 签名或完整性校验失败", result.stdout)
+        self.assertEqual(package.read_bytes(), original_package)
+        self.assertEqual((directory / "SHA256SUMS").read_bytes(), original_checksums)
+        self.assertFalse((directory / "helloworld-packages.adb").exists())
+        self.assertFalse((directory / "runtime-repository.url").exists())
+
+    def test_rejects_corrupt_unsigned_payload_even_with_matching_original_checksum(self):
+        directory = self.make_component(signed=False)
+        package = self.make_package(directory, contents="UNIQUE_UNSIGNED_PAYLOAD\n",
+                                    signed=False, compression="none")
+        original = package.read_bytes()
+        self.assertEqual(original.count(b"UNIQUE_UNSIGNED_PAYLOAD"), 1)
+        corrupted = original.replace(b"UNIQUE_UNSIGNED_PAYLOAD", b"BROKEN_UNSIGNED_PAYLOAD")
+        package.write_bytes(corrupted)
+        write_checksums(directory)
+        verification = run(self.apk, "--allow-untrusted", "verify", package)
+        self.assertNotEqual(verification.returncode, 0)
+        self.assertIn("file integrity error", verification.stdout)
+        self.prepare(directory, success=False)
+        self.assertEqual(package.read_bytes(), corrupted)
+
     def test_each_component_produces_signed_index_and_complete_checksums(self):
         for kind in KEY_NAMES:
             with self.subTest(kind=kind):
                 name = "luci-i18n-firewall-zh-cn" if kind == "fullcone-luci" else kind + "-smoke"
                 directory = self.make_component(kind, name, geodata=kind == "helloworld")
+                package = directory / f"{name}-1.0-r1.apk"
+                original_signed_bytes = package.read_bytes()
                 self.prepare(directory, kind)
+                self.assertEqual(package.read_bytes(), original_signed_bytes)
                 index = directory / f"{kind}-packages.adb"
                 keys = self.work / f"keys-{kind}"
                 keys.mkdir()
@@ -218,9 +324,11 @@ class PrepareComponentFeedTests(SignedFixture):
         directory = self.make_component()
         other = self.work / "other-key"
         self.make_key(other)
-        self.make_package(directory, key=other / "private-key.pem")
+        package = self.make_package(directory, key=other / "private-key.pem")
+        foreign_signed_bytes = package.read_bytes()
         write_checksums(directory)
         self.prepare(directory, success=False)
+        self.assertEqual(package.read_bytes(), foreign_signed_bytes)
 
     def test_rejects_filename_not_matching_package_metadata(self):
         directory = self.make_component()

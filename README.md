@@ -9,7 +9,7 @@
 ## 🌟 核心特性
 
 - **现代解耦架构（纯装配固件流水线）**：
-  - **组件工厂（SDK）**：各第三方核心组件在匹配目标固件版本的官方 OpenWrt SDK 中独立预编译，生成签名 APK、安装约束和 SHA256 清单，发布独立的 GitHub Release 软件源快照，并将索引、URL 与公钥打包为当前工作流运行的 Actions Artifacts。
+  - **组件工厂（SDK）**：各第三方核心组件在匹配目标固件版本的官方 OpenWrt SDK 中独立预编译，随后显式签署 APK 并生成安装约束和 SHA256 清单，发布独立的 GitHub Release 软件源快照，并将索引、URL 与公钥打包为当前工作流运行的 Actions Artifacts。
   - **装配流水线（ImageBuilder）**：固件流水线不下载 SDK、不编译任何组件，仅拉取并验收对应版本的权威组件产物，调用官方 ImageBuilder 执行装配打包。
 - **动态版本锁定与防漂移机制**：
   - 全自动探测解析 OpenWrt 官方权威版本元数据（`downloads.openwrt.org/.versions.json`）；
@@ -91,7 +91,7 @@ flowchart TD
 ├── docs/repository-analysis.md   # 仓库架构、构建契约、验收与已知限制分析
 ├── scripts/
 │   ├── build-firmware.sh         # 固件纯装配核心独立流水线 (Assembly-Only)
-│   ├── prepare-component-feed.sh # 生成签名软件源索引、APK 身份约束与完整校验清单
+│   ├── prepare-component-feed.sh # 签署 SDK APK，生成签名索引、身份约束与完整校验清单
 │   ├── publish-component-feed.sh # 上传全部资产后公开独立 Release 软件源快照
 │   ├── runtime-custom-feed.sh     # 验证公开索引、写入运行时源，并在 rootfs 副本中验收 APK 事务
 │   ├── configure-imagebuilder-apk.py # 调整本地 ImageBuilder，完整传递 APK 身份约束
@@ -159,7 +159,7 @@ OPENWRT_VERSION=25.12.5 ROOTFS_PARTSIZE=4096 make build  # 沿用已解压组件
 
 ## `@custom` 软件源部署与维护
 
-首次部署这次修复时，先把代码推送到**公开 GitHub 仓库**，确保 Actions 的 `GITHUB_TOKEN` 可写入仓库内容，再手动运行“每日自动构建 OpenWrt 固件”。组件 job 会先生成并签名索引，创建 draft Release，上传全部 APK、索引与公钥，最后公开软件源快照。固件 job 在发布完成后才装配并验证这些 URL；本地修改本身不会创建公网软件源。
+首次部署这次修复时，先把代码推送到**公开 GitHub 仓库**，确保 Actions 的 `GITHUB_TOKEN` 可写入仓库内容，再手动运行“每日自动构建 OpenWrt 固件”。组件 job 会先签署未签名的 SDK APK 并严格验签，再生成签名索引，创建 draft Release，上传全部 APK、索引与公钥，最后公开软件源快照。固件 job 在发布完成后才装配并验证这些 URL；本地修改本身不会创建公网软件源。代码更新后应创建新的 workflow 运行；直接重跑旧运行仍使用旧提交。
 
 快照标签示例为 `custom-helloworld-25.12.5-x86_64-<run-id>-<attempt>` 与 `custom-fullcone-25.12.5-x86_64-<run-id>-<attempt>`。FullCone runtime 和 LuCI 使用同一 Release 内各自的索引。每次重跑组件 job 会产生新的 URL；只重跑 firmware job 时，可复用同次运行中已经成功的组件快照和仍未过期的 Artifact。两个组件的尝试次数允许不同，已经发布的快照不覆盖，固件不使用浮动的 `latest` 地址。GitHub 私有仓库的 Release 无法供无凭据的路由器获取，因此发布脚本会拒绝私有仓库。
 
@@ -179,7 +179,7 @@ apk add --simulate coremark
 
 维护时不要删除仍被固件引用的软件源 Release、tag 或资产，也不要将仓库改名、转为私有或修改发布资产。Actions Artifact 到期不会影响已发布软件源，但删除 Release 会让对应固件失去该源。旧固件不会因为仓库代码更新自动修复；推荐重新构建并部署完整新固件。若需手工恢复旧固件，必须拿到其原始组件 APK / 索引、匹配的签名公钥及精确 kernel ABI，单纯换成某次新构建的 URL 不能保证安全。
 
-本次 33 项回归已在本地通过，使用真实 APK v3 工具生成并验证签名包、索引和身份约束，覆盖普通包安装 / 升级时保持定制包身份、缺失 `@custom` 标签的原始故障，以及 ImageBuilder 参数传递。运行时源和发布流程测试使用本地 HTTPS 下载映射与 `gh` 替身，验证配置、公钥、world、资产完整性和失败阻断。**完整组件编译、真实 GitHub Release 发布与完整固件装配仍需首次公开 CI 运行验证**；本地测试通过不表示软件源已经上线。详细测试范围和运行命令见 [仓库分析的验证边界](docs/repository-analysis.md#验证边界)。
+本次 37 项回归已在本地通过，使用真实 APK v3 工具验证未签名 SDK 产物的补签、损坏包与签名失败的拒绝、索引和身份约束，覆盖普通包安装 / 升级时保持定制包身份、缺失 `@custom` 标签的原始故障，以及 ImageBuilder 参数传递。运行时源和发布流程测试使用本地 HTTPS 下载映射与 `gh` 替身，验证配置、公钥、world、资产完整性和失败阻断。此次 CI 已完成两个组件编译，软件源准备时因缺少 APK 签名而失败；**补签修复后的真实发布与完整固件装配仍需新的公开 CI 运行验证**。本地测试通过不表示软件源已经上线，详细测试范围和运行命令见 [仓库分析的验证边界](docs/repository-analysis.md#验证边界)。
 
 主工作流的 firmware job 在装配后指定同版 ImageBuilder 的 APK 工具运行这些回归；检查通过后才生成发布元数据、上传固件 Artifact，并按 `publish_release` 开关发布固件。
 

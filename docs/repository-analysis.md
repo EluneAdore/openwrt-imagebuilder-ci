@@ -44,7 +44,7 @@ flowchart TD
 | `scripts/resolve-version.sh` | 探测最新稳定版，或验证指定版本号格式 |
 | `scripts/setup-sdk.sh` | 官方 SDK 下载、SHA256 校验、解包和可选签名密钥注入 |
 | `scripts/build-firmware.sh` | 预编译组件 / 发布源验收、ImageBuilder 配置、运行时源覆盖、镜像生成和最终验收 |
-| `scripts/prepare-component-feed.sh` | 生成签名 ADB 索引、APK 身份约束、运行时 URL 和完整 SHA256 清单 |
+| `scripts/prepare-component-feed.sh` | 签署未签名 SDK APK 并严格验签，生成签名 ADB 索引、身份约束、运行时 URL 和完整 SHA256 清单 |
 | `scripts/publish-component-feed.sh` | 创建 draft Release，上传 APK / 索引 / 公钥后公开独立软件源快照 |
 | `scripts/runtime-custom-feed.sh` | 验证固定公开索引并生成源 / 公钥覆盖文件；检查最终 world，在 rootfs 副本中更新源和模拟普通包安装 |
 | `scripts/configure-imagebuilder-apk.py` | 调整本地 ImageBuilder 的 `FormatPackages`，完整传递带摘要的 APK 身份约束，保留普通包版本与 ABI 后缀逻辑 |
@@ -114,7 +114,7 @@ SDK 与 ImageBuilder 同版锁定保证目标包格式和内核 ABI 的一致性
 
 | 文件 | 含义 |
 | --- | --- |
-| `*.apk` | SDK 生成并签名的软件包 |
+| `*.apk` | SDK 生成的软件包，软件源准备阶段补签并严格验证后交付 |
 | `repository-packages.txt` | 本地仓库实际包名与版本，格式为 `name=version` |
 | `install-packages.txt` | 最终固件应安装的包名清单 |
 | `install-constraints.txt` | ImageBuilder 安装目标，核心组件使用 `@custom` 并固定 APK 身份，防止同名同版本官方包替代 |
@@ -127,7 +127,9 @@ SDK 与 ImageBuilder 同版锁定保证目标包格式和内核 ABI 的一致性
 
 helloworld 归档为 `openwrt-component-helloworld-${version}-x86_64.tar.gz`，文件直接位于归档根目录。FullCone 归档为 `openwrt-component-fullcone-${version}-x86_64.tar.gz`，内部是 `runtime/`、`luci/` 两个独立目录，避免同名元数据覆盖。
 
-两个组件工作流在原有 Hard Validation 后调用软件源准备脚本，使用 SDK 的 `apk` 生成并签名索引，再追加 `@custom` 目标的 APK 身份约束。hash pin 取自生成的索引，保护 FullCone / LuCI 与官方同名同版本包之间的差别；不得仅用普通版本号代替。软件源 URL、安装约束及所有关键元数据统一加入 SHA256 清单。
+两个组件工作流在原有 Hard Validation 后调用软件源准备脚本。OpenWrt 的 [单包打包规则](https://github.com/openwrt/openwrt/blob/openwrt-25.12/include/package-pack.mk#L554)使用未附加签名参数的 `apk mkpkg`；[CONFIG_SIGNED_PACKAGES](https://github.com/openwrt/openwrt/blob/openwrt-25.12/package/Makefile#L117) 控制索引签名，不能保证单包 compile 输出已签名。因此准备脚本先验证原始 SHA256 与密钥，在临时副本中对没有签名块的 APK 校验内容并以 SDK 私钥显式补签；已有但不可信或损坏的签名仍拒绝，不通过重签掩盖错误。`--allow-untrusted` 仅用于未签名构建产物的内容校验与首次签名，最终 APK、索引和运行时验签均保持严格。补签后必须独立严格验签，因为 [apk-tools 3.0.5 adbsign](https://github.com/alpinelinux/apk-tools/blob/v3.0.5/src/app_adbsign.c#L83) 可能报错仍返回 0。
+
+全部 APK 验签成功后，使用 SDK 的 `apk` 生成并签名索引，再追加 `@custom` 目标的 APK 身份约束。hash pin 取自生成的索引，保护 FullCone / LuCI 与官方同名同版本包之间的差别；不得仅用普通版本号代替。对签名后的 APK 重新计算文件 SHA256，软件源 URL、安装约束及所有关键元数据统一加入校验清单；全部准备成功后才回写组件目录。
 
 发布标签分别为 `custom-helloworld-${version}-x86_64-${run_id}-${run_attempt}` 和 `custom-fullcone-${version}-x86_64-${run_id}-${run_attempt}`。同一次 FullCone 发布包含独立 runtime 和 LuCI 索引。发布脚本要求公开仓库和写权限，先创建 draft Release 并上传全部 APK、签名索引和公钥，再核对服务端资产名称和大小后公开；相同标签不能覆盖，发布不改变 Latest Release。重跑组件 job 会按新的尝试次数发布快照，同时 Artifact 上传设置 `overwrite: true` 以替换本次运行中原有同名中转归档。只重跑固件 job 可以复用同次运行中已成功的组件快照和未过期 Artifact，helloworld 与 FullCone 的尝试次数无需相同。
 
@@ -196,8 +198,9 @@ GitHub Release 资产没有 Actions Artifact 的自动到期限制，长期可�
 
 ## 验证边界
 
-本次 `@custom` 修复的本地回归位于 [tests/test_custom_feed.py](../tests/test_custom_feed.py)，33 项全部通过，使用真实 OpenWrt ImageBuilder APK v3 工具和临时签名密钥，覆盖以下范围：
+本次 `@custom` 修复的本地回归位于 [tests/test_custom_feed.py](../tests/test_custom_feed.py)，37 项全部通过，使用真实 OpenWrt ImageBuilder APK v3 工具和临时签名密钥，覆盖以下范围：
 
+- 三类组件未签名 SDK APK 的首次补签、严格验签和真实安装；签名后更新文件 SHA256 并保持安装身份，重复准备不改写已签名 APK。损坏的未签名内容即使重算原 SHA 仍拒绝，`adbsign` 返回成功却不签名时也必须失败且保留原产物。
 - 三类组件的签名索引、正确的 APK 身份约束和完整 SHA256 覆盖，以及错误密钥、篡改 APK、缺失包、错版 / 错架构的拒绝行为。
 - 官方源与定制源存在同名同版本、不同内容 APK 时，普通包安装和升级保持定制身份；移除 `@custom` 源可重现原始 `missing repository tag` 故障。
 - 从实际 ImageBuilder Makefile 提取 `FormatPackages` 并执行 GNU make，确认完整身份约束、普通版本约束及 ABI 后缀正确传入程序，兼容修改可重复执行，未知格式会失败。
@@ -212,6 +215,6 @@ python3 -m unittest discover -s tests -v
 
 测试默认查找 `.work/` 中的 OpenWrt SDK / ImageBuilder APK v3 工具，也可通过 `CUSTOM_FEED_APK` 指定路径。真实 APK 测试需要该工具及 `openssl`；ImageBuilder 参数测试需要已解压的官方 Makefile 和 GNU make。缺少这些前置条件会跳过相关测试，不能将跳过视为通过。
 
-本地签名、求解器和流程回归尚未完成真实 GitHub Release 发布，也没有代替完整组件编译和完整固件构建。首次上线仍需在公开仓库执行 CI，确认全部组件快照可匿名下载、最终镜像生成并通过运行时源验收，再部署到设备检查实际 `apk update` / 普通包安装。代码修改和本地测试通过均不代表公网源已经存在。
+本地签名、求解器和流程回归尚未完成真实 GitHub Release 发布，也没有代替完整组件编译和完整固件构建。[CI 运行 37902673141](https://github.com/EluneAdore/openwrt-imagebuilder-ci/actions/runs/37902673141) 已验证两个组件编译及原有产物校验成功，但旧版准备脚本在未签名 APK 的严格验签处失败，未创建软件源快照，固件 job 被跳过。本次补签修复需要提交后创建新的 CI 运行，确认全部组件快照可匿名下载、最终镜像生成并通过运行时源验收，再部署到设备检查实际 `apk update` / 普通包安装；重跑旧运行仍使用旧提交。代码修改和本地测试通过均不代表公网源已经存在。
 
 仓库工作流的主要质量检查嵌入组件构建和固件装配脚本，没有完整虚拟机启动验收 job。QGA 的端口检查、启动请求和 procd 调用可通过本地模拟验证，实际 PVE / KVM 通信仍需部署后的宿主机 `ping` 与接口查询。运行方法、平台前置条件及 ESXi 的工具区别均见 README。

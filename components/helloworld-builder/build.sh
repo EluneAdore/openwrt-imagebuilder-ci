@@ -233,7 +233,7 @@ shopt -u nullglob
 [ ${#package_files[@]} -gt 0 ] || die "helloworld feed 没有生成任何 APK"
 cp -f "${package_files[@]}" "${OUTPUT_DIR}/"
 
-# SDK 生成的 APK 使用本地构建密钥签名。ImageBuilder 在装包阶段需要对应公钥。
+# SDK 单包 compile 生成未签名 APK，软件源准备阶段显式签署并验证；导出对应公钥。
 [ -f "${sdk_dir}/public-key.pem" ] || die "SDK 未生成 APK 签名公钥"
 cp -f "${sdk_dir}/public-key.pem" "${OUTPUT_DIR}/helloworld-public-key.pem"
 
