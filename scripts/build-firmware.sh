@@ -77,7 +77,7 @@ echo "==> 正在校验预编译组件完整性..."
 
 # A. 校验 helloworld 预编译组件
 [ -d "${HELLOWORLD_COMPONENT_DIR}" ] || die "helloworld 组件目录不存在: ${HELLOWORLD_COMPONENT_DIR}"
-for req_file in BUILD-INFO.txt repository-packages.txt install-packages.txt install-constraints.txt helloworld-public-key.pem helloworld-packages.adb runtime-repository.url SHA256SUMS; do
+for req_file in BUILD-INFO.txt repository-packages.txt install-packages.txt install-constraints.txt helloworld-public-key.pem helloworld-packages.adb SHA256SUMS; do
     [ -s "${HELLOWORLD_COMPONENT_DIR}/${req_file}" ] || die "helloworld 缺少元数据文件: ${req_file}"
 done
 (cd "${HELLOWORLD_COMPONENT_DIR}" && sha256sum --check --strict SHA256SUMS) || die "helloworld 组件 SHA256 校验失败"
@@ -93,7 +93,7 @@ done < "${HELLOWORLD_COMPONENT_DIR}/repository-packages.txt"
 
 # B. 校验 FullCone runtime 预编译组件
 [ -d "${FULLCONE_RUNTIME_DIR}" ] || die "FullCone runtime 组件目录不存在: ${FULLCONE_RUNTIME_DIR}"
-for req_file in BUILD-INFO.txt repository-packages.txt install-packages.txt install-constraints.txt kernel-dependency.txt fullcone-public-key.pem fullcone-runtime-packages.adb runtime-repository.url SHA256SUMS; do
+for req_file in BUILD-INFO.txt repository-packages.txt install-packages.txt install-constraints.txt kernel-dependency.txt fullcone-public-key.pem fullcone-runtime-packages.adb SHA256SUMS; do
     [ -s "${FULLCONE_RUNTIME_DIR}/${req_file}" ] || die "FullCone runtime 缺少元数据文件: ${req_file}"
 done
 (cd "${FULLCONE_RUNTIME_DIR}" && sha256sum --check --strict SHA256SUMS) || die "FullCone runtime 组件 SHA256 校验失败"
@@ -110,7 +110,7 @@ done
 
 # C. 校验 FullCone LuCI 预编译组件
 [ -d "${FULLCONE_LUCI_DIR}" ] || die "FullCone LuCI 组件目录不存在: ${FULLCONE_LUCI_DIR}"
-for req_file in BUILD-INFO.txt repository-packages.txt install-packages.txt install-constraints.txt luci-fullcone-public-key.pem fullcone-luci-packages.adb runtime-repository.url SHA256SUMS; do
+for req_file in BUILD-INFO.txt repository-packages.txt install-packages.txt install-constraints.txt luci-fullcone-public-key.pem fullcone-luci-packages.adb SHA256SUMS; do
     [ -s "${FULLCONE_LUCI_DIR}/${req_file}" ] || die "FullCone LuCI 缺少元数据文件: ${req_file}"
 done
 (cd "${FULLCONE_LUCI_DIR}" && sha256sum --check --strict SHA256SUMS) || die "FullCone LuCI 组件 SHA256 校验失败"
@@ -164,7 +164,7 @@ echo "==> 检测到已就绪的 ImageBuilder 目录: ${IB_DIR}"
 # 只调整本地装配工具的参数格式，不编译或改写预编译组件。
 python3 "${SCRIPT_DIR}/configure-imagebuilder-apk.py" "${IB_DIR}"
 
-# 合入项目 FILES 和每次组件发布的固定 URL / 公钥，保留原始 files 目录。
+# 合入项目 FILES 和组件 APK / 签名索引 / 公钥，生成固件内置软件源。
 RUNTIME_FILES_DIR="$(mktemp -d "${WORK_DIR}/firmware-files.XXXXXX")"
 trap 'rm -rf "${RUNTIME_FILES_DIR}"' EXIT
 if [ -d "${FILES_DIR}" ]; then

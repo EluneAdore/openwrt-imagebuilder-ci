@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 把组件构建产物转换为可长期下载、严格签名的 APK v3 软件源。
+# 把组件构建产物转换为固件内置、严格签名的 APK v3 软件源。
 die() { printf '错误: %s\n' "$*" >&2; exit 1; }
-[ "$#" -eq 4 ] || die "用法: $0 <feed-kind> <component-dir> <sdk-dir> <release-base-url>"
+[ "$#" -eq 3 ] || die "用法: $0 <feed-kind> <component-dir> <sdk-dir>"
 feed_kind="$1"
 component_dir="$2"
 sdk_dir="$3"
-release_base_url="${4%/}"
 case "${feed_kind}" in
     helloworld) public_key_name=helloworld-public-key.pem ;;
     fullcone-runtime) public_key_name=fullcone-public-key.pem ;;
@@ -36,17 +35,12 @@ shopt -u nullglob
 [ "${#package_files[@]}" -gt 0 ] || die "组件目录中没有 APK"
 
 # 先限制原清单的路径与覆盖范围，再执行原始 SHA-256 校验。
-python3 - "${component_dir}" "${public_key_name}" "${index_name}" "${release_base_url}" "${OPENWRT_VERSION:-}" <<'PY'
-import pathlib, re, sys, urllib.parse
+python3 - "${component_dir}" "${public_key_name}" "${index_name}" "${OPENWRT_VERSION:-}" <<'PY'
+import pathlib, re, sys
 root = pathlib.Path(sys.argv[1])
-key_name, index_name, release_base, expected_version = sys.argv[2:]
+key_name, index_name, expected_version = sys.argv[2:]
 def fail(message):
     raise SystemExit("错误: " + message)
-url = urllib.parse.urlsplit(release_base)
-if (url.scheme != "https" or url.netloc != "github.com" or url.query or url.fragment
-        or url.username or url.password
-        or not re.fullmatch(r"/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/releases/download/[A-Za-z0-9_.-]+", url.path)):
-    fail("release-base-url 必须是 GitHub Release 的 HTTPS 下载地址")
 fields = {}
 for line in (root / "BUILD-INFO.txt").read_text().splitlines():
     if ": " in line and not line.startswith(" "):
@@ -62,7 +56,7 @@ if expected_version and version != expected_version:
 if fields.get("Architecture") != "x86_64":
     fail("BUILD-INFO.txt Architecture 必须是 x86_64")
 allowed = {"BUILD-INFO.txt", "repository-packages.txt", "install-packages.txt",
-           "install-constraints.txt", "kernel-dependency.txt", "runtime-repository.url",
+           "install-constraints.txt", "kernel-dependency.txt",
            key_name, index_name}
 packages = {p.name for p in root.glob("*.apk")}
 seen = set()
@@ -89,7 +83,7 @@ fi
 
 temporary_dir="$(mktemp -d "${component_dir}/.prepare-feed.XXXXXX")"
 trap 'rm -rf "${temporary_dir}"' EXIT
-mkdir -p "${temporary_dir}/keys" "${temporary_dir}/published-packages"
+mkdir -p "${temporary_dir}/keys"
 cp "${component_dir}/${public_key_name}" "${temporary_dir}/keys/${public_key_name}"
 openssl pkey -pubin -in "${component_dir}/${public_key_name}" -outform DER \
     -out "${temporary_dir}/component-public.der" 2>/dev/null || die "组件公钥无效"
@@ -114,7 +108,7 @@ for package_file in "${package_files[@]}"; do
             die "已有 APK 签名或完整性校验失败，拒绝重新签名"
         fi
         # 此选项只用于校验和首次签署本次 SDK 的未签名构建产物。
-        # 发布索引和运行时验签不允许使用它。
+        # 索引和运行时验签不允许使用它。
         "${apk_tool}" --keys-dir "${temporary_dir}/keys" --allow-untrusted verify "${prepared_package}" || die "未签名 APK 内容完整性校验失败"
         "${apk_tool}" --keys-dir "${temporary_dir}/keys" --allow-untrusted adbsign \
             --sign-key "${sdk_dir}/private-key.pem" "${prepared_package}" || die "APK 签名失败"
@@ -132,29 +126,17 @@ for line in pathlib.Path(sys.argv[2]).read_text().splitlines():
             raise SystemExit("错误: APK 元数据字段重复")
         fields[match[1]] = match[2]
 name, version, arch = (fields.get(key, "") for key in ("name", "version", "arch"))
-if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) or not version or arch not in {"x86_64", "all", "noarch"}:
+if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9+_.-]*", name) or not version or arch not in {"x86_64", "all", "noarch"}:
     raise SystemExit("错误: APK 名称、版本或架构无效")
 if sys.argv[1] != name + "-" + version + ".apk":
     raise SystemExit("错误: APK 文件名与 name-version.apk 不一致")
 print(name, version, sep="\t")
 PY
 done
-# GitHub 会改写含 ~ 等特殊字符的资产名。每个快照只有同名包的一个版本，
-# 发布使用包名.apk；组件归档仍保留 ImageBuilder 需要的 name-version.apk。
-published_packages=()
-while IFS=$'\t' read -r package_name package_version; do
-    published_package="${temporary_dir}/published-packages/${package_name}.apk"
-    [ ! -e "${published_package}" ] || die "同一组件包含重复包名: ${package_name}"
-    cp "${temporary_dir}/${package_name}-${package_version}.apk" "${published_package}"
-    published_packages+=("${published_package}")
-done < "${temporary_dir}/apk-metadata.tsv"
-# 这里的 ${name} 是 APK 索引模板变量，不能由 shell 展开。
-# shellcheck disable=SC2016
 "${apk_tool}" --keys-dir "${temporary_dir}/keys" mkndx \
     --sign-key "${sdk_dir}/private-key.pem" \
-    --pkgname-spec '${name}.apk' \
     --description "OpenWrt ${build_version} ${feed_kind} x86_64" \
-    --output "${temporary_dir}/${index_name}" "${published_packages[@]}" || die "生成签名 APK 索引失败"
+    --output "${temporary_dir}/${index_name}" "${prepared_packages[@]}" || die "生成签名 APK 索引失败"
 "${apk_tool}" --keys-dir "${temporary_dir}/keys" verify "${temporary_dir}/${index_name}" || die "APK 索引签名校验失败"
 "${apk_tool}" --keys-dir "${temporary_dir}/keys" adbdump "${temporary_dir}/${index_name}" > "${temporary_dir}/index.txt" || die "无法读取 APK 索引"
 
@@ -165,8 +147,6 @@ root, temporary = map(pathlib.Path, sys.argv[1:])
 def fail(message):
     raise SystemExit("错误: " + message)
 index_lines = (temporary / "index.txt").read_text().splitlines()
-if [line for line in index_lines if line.startswith("pkgname-spec:")] != ["pkgname-spec: ${name}.apk"]:
-    fail("APK 索引必须使用固定发布文件名 ${name}.apk")
 actual = {}
 for line in (temporary / "apk-metadata.tsv").read_text().splitlines():
     name, version = line.split("\t")
@@ -221,7 +201,6 @@ for name, constraint in zip(packages, constraints):
         fail("安装约束必须锁定 @custom；官方 GeoData 保持无 tag")
 (temporary / "install-constraints.txt").write_text("\n".join(new_constraints) + "\n")
 PY
-printf '%s/%s\n' "${release_base_url}" "${index_name}" > "${temporary_dir}/runtime-repository.url"
 checksum_files=(BUILD-INFO.txt repository-packages.txt install-packages.txt "${public_key_name}")
 [ ! -f "${component_dir}/kernel-dependency.txt" ] || checksum_files+=(kernel-dependency.txt)
 (
@@ -230,14 +209,13 @@ checksum_files=(BUILD-INFO.txt repository-packages.txt install-packages.txt "${p
 ) > "${temporary_dir}/SHA256SUMS"
 (
     cd "${temporary_dir}"
-    sha256sum "${prepared_packages[@]##*/}" "${index_name}" runtime-repository.url install-constraints.txt
+    sha256sum "${prepared_packages[@]##*/}" "${index_name}" install-constraints.txt
 ) >> "${temporary_dir}/SHA256SUMS"
 for prepared_package in "${prepared_packages[@]}"; do
     mv -f "${prepared_package}" "${component_dir}/${prepared_package##*/}"
 done
 mv -f "${temporary_dir}/${index_name}" "${component_dir}/${index_name}"
-mv -f "${temporary_dir}/runtime-repository.url" "${component_dir}/runtime-repository.url"
 mv -f "${temporary_dir}/install-constraints.txt" "${component_dir}/install-constraints.txt"
 mv -f "${temporary_dir}/SHA256SUMS" "${component_dir}/SHA256SUMS"
 (cd "${component_dir}" && sha256sum --check --strict SHA256SUMS) || die "新软件源 SHA-256 校验失败"
-printf '已准备 %s 软件源，共 %s 个 APK: %s/%s\n' "${feed_kind}" "${#package_files[@]}" "${release_base_url}" "${index_name}"
+printf '已准备 %s 内置软件源，共 %s 个 APK，签名索引: %s\n' "${feed_kind}" "${#package_files[@]}" "${index_name}"

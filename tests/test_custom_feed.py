@@ -1,14 +1,11 @@
-"""长期 custom APK 源回归；只在临时目录运行，GitHub 发布使用本地 gh 替身。
+"""固件内置 custom APK 源回归；只在临时目录使用真实签名 APK。
 
 运行：python3 -m unittest discover -s tests -v
 可通过 CUSTOM_FEED_APK 指定 OpenWrt SDK/ImageBuilder 的 apk-tools 3 路径。
 """
 
 import base64
-import contextlib
-import functools
 import hashlib
-import http.server
 import json
 import os
 from pathlib import Path
@@ -18,13 +15,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PREPARE = ROOT / "scripts/prepare-component-feed.sh"
-PUBLISH = ROOT / "scripts/publish-component-feed.sh"
 RUNTIME = ROOT / "scripts/runtime-custom-feed.sh"
 CONFIGURE = ROOT / "scripts/configure-imagebuilder-apk.py"
 KEY_NAMES = {
@@ -32,14 +27,7 @@ KEY_NAMES = {
     "fullcone-runtime": "fullcone-public-key.pem",
     "fullcone-luci": "luci-fullcone-public-key.pem",
 }
-RELEASE_TAG = "custom-helloworld-25.12.5-x86_64-12345-1"
-FULLCONE_TAG = "custom-fullcone-25.12.5-x86_64-12345-1"
-RELEASE_URL = "https://github.com/example/router/releases/download/" + RELEASE_TAG
-
-
-def release_url(kind):
-    tag = RELEASE_TAG if kind == "helloworld" else FULLCONE_TAG
-    return "https://github.com/example/router/releases/download/" + tag
+EMBEDDED_BASE = Path("usr/share/custom-apk")
 
 
 def run(*args, cwd=None, env=None):
@@ -93,32 +81,6 @@ def index_identity(apk, index, name):
             if hashes:
                 return "Q1" + base64.b64encode(bytes.fromhex(hashes[1])[:20]).decode()
     raise AssertionError(f"签名索引中找不到 {name} 的 APK identity")
-
-
-@contextlib.contextmanager
-def serve_release_assets(directory):
-    """真实下载仅开放模拟 Release 资产，记录 APK 实际请求的文件名。"""
-    requests = []
-
-    class Handler(http.server.SimpleHTTPRequestHandler):
-        def do_GET(self):
-            requests.append(self.path)
-            super().do_GET()
-
-        def log_message(self, format, *args):
-            pass
-
-    server = http.server.ThreadingHTTPServer(
-        ("127.0.0.1", 0), functools.partial(Handler, directory=str(directory))
-    )
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        yield f"http://127.0.0.1:{server.server_port}", requests
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join(timeout=5)
 
 
 class SignedFixture(unittest.TestCase):
@@ -186,7 +148,7 @@ class SignedFixture(unittest.TestCase):
 
     def prepare(self, directory, kind="helloworld", success=True):
         self.assertTrue(PREPARE.is_file(), f"缺少脚本: {PREPARE}")
-        result = run("bash", PREPARE, kind, directory, self.sdk, release_url(kind), env=self.env)
+        result = run("bash", PREPARE, kind, directory, self.sdk, env=self.env)
         if success:
             self.assertEqual(result.returncode, 0, result.stdout)
         else:
@@ -199,18 +161,6 @@ class SignedFixture(unittest.TestCase):
         checked(self.apk, "--keys-dir", self.trusted_keys, "mkndx", "--sign-key", self.sdk / "private-key.pem",
                 "--output", index, *sorted(directory.glob("*.apk")))
         return index
-
-    def release_assets(self, directory):
-        """ImageBuilder 保留原 APK 文件名，公网副本必须与索引 name-only 模板一致。"""
-        published = Path(tempfile.mkdtemp(prefix="published-", dir=self.work))
-        for line in (directory / "repository-packages.txt").read_text().splitlines():
-            name, version = line.split("=", 1)
-            shutil.copyfile(directory / f"{name}-{version}.apk", published / f"{name}.apk")
-        for pattern in ("*-packages.adb", "*-public-key.pem"):
-            for path in directory.glob(pattern):
-                shutil.copyfile(path, published / path.name)
-        return published
-
 
 class PrepareComponentFeedTests(SignedFixture):
     def test_unsigned_sdk_packages_are_signed_before_indexing_for_each_component(self):
@@ -252,9 +202,8 @@ class PrepareComponentFeedTests(SignedFixture):
                 self.assertIn(f"{name}-1.0-r1.apk: FAILED", stale.stdout)
                 checked("sha256sum", "--check", "--strict", "SHA256SUMS", cwd=directory)
 
-                published = self.release_assets(directory)
                 repositories = self.work / f"{kind}-install-repositories"
-                repositories.write_text("@custom " + (published / index.name).as_uri() + "\n")
+                repositories.write_text("@custom " + index.as_uri() + "\n")
                 install_root = self.work / f"{kind}-install-root"
                 install_root.mkdir()
                 checked(self.apk, "--root", install_root, "--arch", "x86_64",
@@ -325,9 +274,8 @@ class PrepareComponentFeedTests(SignedFixture):
                 keys.mkdir()
                 shutil.copyfile(self.sdk / "public-key.pem", keys / "fixture.pem")
                 checked(self.apk, "--keys-dir", keys, "verify", index)
-                self.assertIn("pkgname-spec: ${name}.apk", checked(self.apk, "adbdump", index))
-                self.assertEqual((directory / "runtime-repository.url").read_text().strip(),
-                                 f"{release_url(kind)}/{kind}-packages.adb")
+                self.assertNotIn("pkgname-spec: ${name}.apk", checked(self.apk, "adbdump", index))
+                self.assertFalse((directory / "runtime-repository.url").exists())
                 constraints = (directory / "install-constraints.txt").read_text().splitlines()
                 identity = index_identity(self.apk, index, name)
                 self.assertIn(f"{name}@custom><{identity}", constraints)
@@ -379,9 +327,11 @@ class PrepareComponentFeedTests(SignedFixture):
         write_checksums(directory)
         self.prepare(directory, success=False)
 
-    def test_rejects_package_name_github_would_rename(self):
-        directory = self.make_component(name="unsafe+release-name")
-        self.prepare(directory, success=False)
+    def test_package_name_with_plus_is_supported_by_local_repository(self):
+        directory = self.make_component(name="local+package")
+        self.prepare(directory)
+        checked(self.apk, "--keys-dir", self.trusted_keys, "verify",
+                directory / "local+package-1.0-r1.apk", directory / "helloworld-packages.adb")
 
     def test_rejects_undeclared_apk(self):
         directory = self.make_component()
@@ -402,7 +352,7 @@ class PrepareComponentFeedTests(SignedFixture):
         write_checksums(directory)
         self.prepare(directory, success=False)
 
-    def test_rejects_wrong_release_version(self):
+    def test_rejects_wrong_openwrt_version(self):
         directory = self.make_component()
         self.env["OPENWRT_VERSION"] = "25.12.4"
         self.prepare(directory, success=False)
@@ -506,57 +456,13 @@ class ImageBuilderConstraintTests(unittest.TestCase):
             self.assertEqual(makefile.read_text(), "all:\n\t@true\n")
 
 
-CURL_MOCK = '''#!/usr/bin/env python3
-import json, os, sys
-from pathlib import Path
-args = sys.argv[1:]
-with Path(os.environ["CURL_MOCK_LOG"]).open("a") as log:
-    log.write(json.dumps(args) + "\\n")
-mapping = json.loads(Path(os.environ["FEED_TRANSPORT_MAP"]).read_text())
-url = next((arg for arg in args if arg.startswith("https://")), "")
-if url not in mapping:
-    print("fixture URL unavailable", file=sys.stderr)
-    sys.exit(22)
-data = Path(mapping[url]).read_bytes()
-if os.environ.get("CURL_MOCK_CORRUPT_INDEX") == "1":
-    data += b"incorrect release asset"
-output = next((args[i + 1] for i, arg in enumerate(args[:-1]) if arg in ("-o", "--output")), None)
-if output:
-    Path(output).write_bytes(data)
-else:
-    sys.stdout.buffer.write(data)
-'''
 
-
-APK_TRANSPORT = '''#!/usr/bin/env python3
-import json, os, subprocess, sys, tempfile
+APK_LOGGER = r'''#!/usr/bin/env python3
+import json, os, subprocess, sys
 from pathlib import Path
-args = sys.argv[1:]
-with Path(os.environ["APK_TRANSPORT_LOG"]).open("a") as log:
-    log.write(json.dumps(args) + "\\n")
-mapping = json.loads(Path(os.environ["FEED_TRANSPORT_MAP"]).read_text())
-def localize(content):
-    for url, path in mapping.items():
-        content = content.replace(url, Path(path).as_uri())
-    return content
-with tempfile.TemporaryDirectory(prefix="custom-feed-apk-transport-") as temporary:
-    if "--repositories-file" in args:
-        i = args.index("--repositories-file") + 1
-        config = Path(args[i])
-        mapped = Path(temporary) / "repositories"
-        mapped.write_text(localize(config.read_text()))
-        args[i] = str(mapped)
-    elif "--root" in args:
-        root = Path(args[args.index("--root") + 1])
-        files = [root / "etc/apk/repositories"] + sorted((root / "etc/apk/repositories.d").glob("*.list"))
-        for config in files:
-            if config.is_file():
-                content = config.read_text()
-                mapped = localize(content)
-                if mapped != content:
-                    config.write_text(mapped)
-    args = [localize(arg) for arg in args]
-    sys.exit(subprocess.call([os.environ["REAL_CUSTOM_FEED_APK"], "--no-network"] + args))
+with Path(os.environ["APK_TEST_LOG"]).open("a") as log:
+    log.write(json.dumps(sys.argv[1:]) + "\n")
+sys.exit(subprocess.call([os.environ["REAL_CUSTOM_FEED_APK"], "--no-network"] + sys.argv[1:]))
 '''
 
 
@@ -565,32 +471,29 @@ class RuntimeCustomFeedTests(SignedFixture):
         super().setUp()
         self.components = []
         self.names = []
-        self.mapping = {}
+        self.versions = []
         for kind in KEY_NAMES:
             name = "luci-i18n-firewall-zh-cn" if kind == "fullcone-luci" else kind + "-smoke"
-            component = self.make_component(kind, name)
+            version = "26.280.64158~a450f0d-r1" if kind == "fullcone-luci" else "1.0-r1"
+            component = self.make_component(kind, name, version=version)
             self.prepare(component, kind)
             self.components.append(component)
             self.names.append(name)
-            published = self.release_assets(component)
-            self.mapping[(component / "runtime-repository.url").read_text().strip()] = str(published / f"{kind}-packages.adb")
-        self.transport_map = self.work / "transport-map.json"
-        self.transport_map.write_text(json.dumps(self.mapping))
-        mock_bin = self.work / "transport-bin"
-        mock_bin.mkdir()
-        curl = mock_bin / "curl"
-        curl.write_text(CURL_MOCK)
-        curl.chmod(0o755)
+            self.versions.append(version)
         wrapper = self.sdk / "staging_dir/host/bin/apk"
-        wrapper.unlink()
-        wrapper.write_text(APK_TRANSPORT)
+        wrapper.write_text(APK_LOGGER)
         wrapper.chmod(0o755)
-        self.apk_log = self.work / "apk-transport.jsonl"
-        self.curl_log = self.work / "curl-calls.jsonl"
-        self.env.update({"PATH": str(mock_bin) + os.pathsep + os.environ["PATH"],
-                         "FEED_TRANSPORT_MAP": str(self.transport_map),
-                         "CURL_MOCK_LOG": str(self.curl_log),
-                         "APK_TRANSPORT_LOG": str(self.apk_log),
+        self.apk_log = self.work / "apk-calls.jsonl"
+        self.external_log = self.work / "external-tools.log"
+        blocked_bin = self.work / "blocked-bin"
+        blocked_bin.mkdir()
+        for name in ("curl", "gh"):
+            tool = blocked_bin / name
+            tool.write_text("#!/bin/sh\nprintf '%s\\n' \"$0\" >> \"$EXTERNAL_TOOLS_LOG\"\nexit 99\n")
+            tool.chmod(0o755)
+        self.env.update({"PATH": str(blocked_bin) + os.pathsep + os.environ["PATH"],
+                         "APK_TEST_LOG": str(self.apk_log),
+                         "EXTERNAL_TOOLS_LOG": str(self.external_log),
                          "REAL_CUSTOM_FEED_APK": str(self.apk)})
         self.overlay = self.work / "overlay"
         self.overlay.mkdir()
@@ -606,31 +509,38 @@ class RuntimeCustomFeedTests(SignedFixture):
 
     def install_rootfs(self):
         rootfs = self.work / "rootfs"
-        rootfs.mkdir()
+        shutil.copytree(self.overlay, rootfs)
         official = self.work / "official"
         self.make_package(official, name="coremark")
-        for name in self.names:
-            self.make_package(official, name=name, contents="official replacement\n")
+        for name, version in zip(self.names, self.versions):
+            self.make_package(official, name=name, contents="official replacement\n", version=version)
         official_index = self.signed_index(official)
-        setup_repos = self.work / "install-repositories"
-        setup_repos.write_text(official_index.as_uri() + "\n" + "".join(
-            "@custom " + Path(index).as_uri() + "\n" for index in self.mapping.values()
+        self.setup_repos = self.work / "install-repositories"
+        self.setup_repos.write_text(official_index.as_uri() + "\n" + "".join(
+            "@custom " + (rootfs / EMBEDDED_BASE / kind / f"{kind}-packages.adb").as_uri() + "\n"
+            for kind in KEY_NAMES
         ))
         constraints = [line for component in self.components
                        for line in (component / "install-constraints.txt").read_text().splitlines()]
         checked(self.apk, "--root", rootfs, "--arch", "x86_64", "--keys-dir", self.trusted_keys,
-                "--repositories-file", setup_repos, "--no-network", "add", "--usermode", "--initdb", *constraints)
-        shutil.copytree(self.overlay, rootfs, dirs_exist_ok=True)
+                "--repositories-file", self.setup_repos, "--no-network", "add", "--usermode", "--initdb", *constraints)
         (rootfs / "etc/apk/repositories").write_text(official_index.as_uri() + "\n")
         return rootfs
 
-    def test_stage_and_verify_real_world_without_mutating_rootfs(self):
+    def test_stage_and_verify_real_world_without_mutating_rootfs_or_network_dependencies(self):
         self.runtime("stage", self.overlay)
         config = self.overlay / "etc/apk/repositories.d/custom-components.list"
-        self.assertEqual(config.read_text().splitlines(), ["@custom " + url for url in self.mapping])
+        expected = [f"@custom file:///usr/share/custom-apk/{kind}/{kind}-packages.adb" for kind in KEY_NAMES]
+        self.assertEqual(config.read_text().splitlines(), expected)
+        self.assertNotIn(str(self.work), config.read_text())
         for component, kind in zip(self.components, KEY_NAMES):
             self.assertEqual((self.overlay / "etc/apk/keys" / KEY_NAMES[kind]).read_bytes(),
                              (component / KEY_NAMES[kind]).read_bytes())
+            embedded = self.overlay / EMBEDDED_BASE / kind
+            expected_assets = {path.name for path in component.glob("*.apk")} | {f"{kind}-packages.adb"}
+            self.assertEqual({path.name for path in embedded.iterdir()}, expected_assets)
+            for name in expected_assets:
+                self.assertEqual((embedded / name).read_bytes(), (component / name).read_bytes())
         rootfs = self.install_rootfs()
         before = {str(p.relative_to(rootfs)): p.read_bytes() for p in rootfs.rglob("*") if p.is_file()}
         self.runtime("verify", rootfs)
@@ -640,30 +550,68 @@ class RuntimeCustomFeedTests(SignedFixture):
         self.assertTrue(any("update" in call for call in calls), calls)
         self.assertTrue(any("add" in call and "--simulate" in call and "coremark" in call for call in calls), calls)
         self.assertFalse(any("--allow-untrusted" in call for call in calls), calls)
+        self.assertFalse(self.external_log.exists(), "内置源不应调用网络或托管工具")
 
-    def test_stage_rejects_remote_index_different_from_component(self):
-        self.env["CURL_MOCK_CORRUPT_INDEX"] = "1"
-        result = self.runtime("stage", self.overlay, success=False)
-        self.assertIn("索引与当前组件不一致", result.stdout)
-
-    def test_stage_rejects_snapshot_of_another_release(self):
-        component = self.components[0]
-        url = (component / "runtime-repository.url").read_text()
-        other_url = url.replace("25.12.5", "25.12.4")
-        (component / "runtime-repository.url").write_text(other_url)
-        self.mapping[other_url.strip()] = self.mapping[url.strip()]
-        self.transport_map.write_text(json.dumps(self.mapping))
-        write_checksums(component)
-        result = self.runtime("stage", self.overlay, success=False)
-        self.assertIn("同版本、同架构", result.stdout)
+    def test_embedded_tilde_version_installs_and_official_transactions_preserve_custom_identity(self):
+        self.runtime("stage", self.overlay)
+        rootfs = self.install_rootfs()
+        component = self.components[2]
+        name, version = self.names[2], self.versions[2]
+        canonical = f"{name}-{version}.apk"
+        self.assertIn("~", canonical)
+        self.assertEqual((rootfs / EMBEDDED_BASE / "fullcone-luci" / canonical).read_bytes(),
+                         (component / canonical).read_bytes())
+        installed_before = (rootfs / "lib/apk/db/installed").read_text()
+        self.assertRegex(installed_before, r"(?m)^V:" + re.escape(version) + r"$")
+        custom_pins = [line for line in (rootfs / "etc/apk/world").read_text().splitlines() if "@custom" in line]
+        # 删除构建输入；固件内置组件必须独立提供后续安装事务所需的源和包。
+        for component in self.components:
+            shutil.rmtree(component)
+        args = (self.apk, "--root", rootfs, "--arch", "x86_64", "--keys-dir", self.trusted_keys,
+                "--repositories-file", self.setup_repos, "--no-network")
+        checked(*args, "update")
+        checked(*args, "add", "--usermode", "coremark")
+        checked(*args, "upgrade", "--no-scripts")
+        after_pins = [line for line in (rootfs / "etc/apk/world").read_text().splitlines() if "@custom" in line]
+        self.assertEqual(after_pins, custom_pins)
+        for name in self.names:
+            self.assertEqual((rootfs / "usr/share" / name).read_text(), "custom\n")
+        self.assertFalse(self.external_log.exists())
 
     def test_stage_rejects_missing_metadata_checksum_coverage(self):
         component = self.components[0]
         checksums = component / "SHA256SUMS"
         checksums.write_text("\n".join(line for line in checksums.read_text().splitlines()
-                                      if not line.endswith("runtime-repository.url")) + "\n")
+                                      if not line.endswith("helloworld-packages.adb")) + "\n")
         result = self.runtime("stage", self.overlay, success=False)
         self.assertIn("SHA256SUMS 未覆盖", result.stdout)
+
+    def test_stage_rejects_missing_component_apk(self):
+        next(self.components[0].glob("*.apk")).unlink()
+        self.runtime("stage", self.overlay, success=False)
+
+    def test_stage_rejects_corrupt_component_apk(self):
+        package = next(self.components[0].glob("*.apk"))
+        package.write_bytes(package.read_bytes() + b"corrupt")
+        self.runtime("stage", self.overlay, success=False)
+
+    def test_stage_rejects_corrupt_payload_even_with_updated_checksums(self):
+        component, name = self.components[0], self.names[0]
+        package = self.make_package(component, name=name, contents="UNIQUE_STAGE_PAYLOAD\n",
+                                    compression="none")
+        write_checksums(component)
+        self.prepare(component)
+        original = package.read_bytes()
+        self.assertEqual(original.count(b"UNIQUE_STAGE_PAYLOAD"), 1)
+        package.write_bytes(original.replace(b"UNIQUE_STAGE_PAYLOAD", b"BROKEN_STAGE_PAYLOAD"))
+        write_checksums(component)
+        result = self.runtime("stage", self.overlay, success=False)
+        self.assertIn("file integrity error", result.stdout)
+
+    def test_stage_rejects_corrupt_component_index(self):
+        index = self.components[0] / "helloworld-packages.adb"
+        index.write_bytes(index.read_bytes() + b"corrupt")
+        self.runtime("stage", self.overlay, success=False)
 
     def test_verify_rejects_rootfs_without_custom_repository(self):
         self.runtime("stage", self.overlay)
@@ -689,281 +637,28 @@ class RuntimeCustomFeedTests(SignedFixture):
         world.write_text("\n".join(lines) + "\n")
         self.runtime("verify", rootfs, success=False)
 
+    def test_verify_rejects_missing_embedded_index(self):
+        self.runtime("stage", self.overlay)
+        rootfs = self.install_rootfs()
+        (rootfs / EMBEDDED_BASE / "helloworld/helloworld-packages.adb").unlink()
+        self.runtime("verify", rootfs, success=False)
 
-GH_MOCK = '''#!/usr/bin/env python3
-import json, os, shutil, sys
-from pathlib import Path
-args = sys.argv[1:]
-with Path(os.environ["GH_MOCK_LOG"]).open("a") as log:
-    log.write(json.dumps(args) + "\\n")
-if args[:2] == ["repo", "view"]:
-    print("PRIVATE" if os.environ.get("GH_MOCK_PRIVATE_REPO") == "1" else "PUBLIC")
-    sys.exit(0)
-if args and args[0] == "api":
-    if os.environ.get("GH_MOCK_API_FAILURE") == "1":
-        print("gh: Bad credentials (HTTP 401)", file=sys.stderr)
-        sys.exit(1)
-    endpoint = next((a for a in args[1:] if a.startswith("repos/")), "")
-    if "/git/ref" in endpoint or "/git/matching-refs" in endpoint:
-        if os.environ.get("GH_MOCK_EXISTING_TAG") == "1":
-            print(json.dumps({"ref": "refs/tags/component-fixture"}))
-            sys.exit(0)
-        print("gh: Not Found (HTTP 404)", file=sys.stderr)
-        sys.exit(1)
-    if "/releases/tags/" in endpoint:
-        if os.environ.get("GH_MOCK_EXISTING_RELEASE") == "1":
-            print(json.dumps({"id": 7, "draft": False}))
-            sys.exit(0)
-        print("gh: Not Found (HTTP 404)", file=sys.stderr)
-        sys.exit(1)
-    print(json.dumps({"private": False, "visibility": "public"}))
-    sys.exit(0)
-if args[:2] == ["release", "view"]:
-    published = Path(os.environ["GH_MOCK_ASSET_DIR"])
-    assets = [{"name": path.name, "size": path.stat().st_size}
-              for path in sorted(published.iterdir()) if path.is_file()]
-    if os.environ.get("GH_MOCK_MISSING_ASSET") == "1":
-        assets = assets[:-1]
-    if os.environ.get("GH_MOCK_WRONG_ASSET_SIZE") == "1":
-        assets[0]["size"] += 1
-    print(json.dumps({"isDraft": True, "assets": assets}))
-    sys.exit(0)
-if args[:2] == ["release", "upload"]:
-    if os.environ.get("GH_MOCK_FAIL_UPLOAD") == "1":
-        print("fixture upload failed", file=sys.stderr)
-        sys.exit(1)
-    published = Path(os.environ["GH_MOCK_ASSET_DIR"])
-    for arg in args[3:]:
-        path = Path(arg)
-        if path.is_file():
-            # GitHub Release 上传 API 会改名；~ 版本是此次真实 CI 的触发条件。
-            name = path.name.replace("~", ".")
-            if os.environ.get("GH_MOCK_RENAME_ASSET") == "1" and path.suffix == ".apk":
-                name = "renamed-" + name
-            target = published / name
-            if target.exists():
-                print("gh: already_exists (HTTP 422)", file=sys.stderr)
-                sys.exit(1)
-            shutil.copyfile(path, target)
-if args[:2] == ["release", "create"]:
-    print("https://github.com/example/router/releases/tag/component-fixture")
-sys.exit(0)
-'''
+    def test_verify_rejects_missing_embedded_apk(self):
+        self.runtime("stage", self.overlay)
+        rootfs = self.install_rootfs()
+        next((rootfs / EMBEDDED_BASE / "helloworld").glob("*.apk")).unlink()
+        self.runtime("verify", rootfs, success=False)
 
-
-class PublishComponentFeedTests(SignedFixture):
-    def setUp(self):
-        super().setUp()
-        self.component = self.make_component()
-        self.prepare(self.component)
-        mock_bin = self.work / "mock-bin"
-        mock_bin.mkdir()
-        gh = mock_bin / "gh"
-        gh.write_text(GH_MOCK)
-        gh.chmod(0o755)
-        self.log = self.work / "gh-calls.jsonl"
-        self.published = self.work / "release-assets"
-        self.published.mkdir()
-        self.publish_tag = RELEASE_TAG
-        self.env.update({"PATH": str(mock_bin) + os.pathsep + os.environ["PATH"],
-                         "GH_MOCK_LOG": str(self.log), "GH_MOCK_ASSET_DIR": str(self.published),
-                         "GH_TOKEN": "fixture-token",
-                         "GITHUB_REPOSITORY": "example/router", "GH_REPO": "example/router",
-                         "GITHUB_SHA": "0123456789abcdef0123456789abcdef01234567"})
-
-    def publish(self, *directories):
-        self.assertTrue(PUBLISH.is_file(), f"缺少脚本: {PUBLISH}")
-        return run("bash", PUBLISH, self.publish_tag, "回归 fixture", *(directories or (self.component,)), env=self.env)
-
-    def calls(self):
-        return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
-
-    def test_draft_upload_all_assets_then_publish_without_latest(self):
-        result = self.publish()
-        self.assertEqual(result.returncode, 0, result.stdout)
-        calls = self.calls()
-        creates = [i for i, call in enumerate(calls) if call[:2] == ["release", "create"]]
-        uploads = [i for i, call in enumerate(calls) if call[:2] == ["release", "upload"]]
-        edits = [i for i, call in enumerate(calls) if call[:2] == ["release", "edit"]]
-        self.assertEqual(len(creates), 1, calls)
-        self.assertTrue(uploads, calls)
-        self.assertEqual(len(edits), 1, calls)
-        self.assertLess(creates[0], min(uploads))
-        self.assertLess(max(uploads), edits[0])
-        self.assertIn("--draft", calls[creates[0]])
-        self.assertIn("--draft=false", calls[edits[0]])
-        self.assertIn("--latest=false", calls[edits[0]])
-        assets = [Path(arg).name for i in uploads for arg in calls[i]
-                  if arg.endswith((".apk", "-packages.adb", "-public-key.pem"))]
-        expected = {"custom-feed-smoke.apk", "helloworld-packages.adb", "helloworld-public-key.pem"}
-        self.assertEqual(set(assets), expected)
-        self.assertEqual(len(assets), len(expected))
-        self.assertNotIn("--clobber", [arg for call in calls for arg in call])
-        self.assertFalse(any("private-key" in arg for call in calls for arg in call))
-
-    def test_tilde_version_release_downloads_name_only_apk_without_changing_identity(self):
-        # 与真实 LuCI/FullCone 日期版本一致，GitHub API 会改名 canonical 文件中的 ~。
-        version = "2026.10.09~abcdef123-r1"
-        name = "custom-feed-smoke"
-        shutil.rmtree(self.component)
-        self.component = self.make_component(version=version)
-        canonical = self.component / f"{name}-{version}.apk"
-        original_package = canonical.read_bytes()
-        original_index = self.work / "original-index.adb"
-        checked(self.apk, "--keys-dir", self.trusted_keys, "mkndx", "--sign-key",
-                self.sdk / "private-key.pem", "--output", original_index, canonical)
-        original_identity = index_identity(self.apk, original_index, name)
-
-        prepared = self.prepare(self.component)
-        self.assertNotIn("not matching package name specification", prepared.stdout)
-        result = self.publish()
-        self.assertEqual(result.returncode, 0, result.stdout)
-        uploaded = self.published / f"{name}.apk"
-        self.assertEqual(uploaded.read_bytes(), original_package)
-        self.assertEqual(canonical.read_bytes(), original_package)
-        self.assertFalse((self.component / f"{name}.apk").exists())
-        self.assertFalse((self.published / canonical.name).exists())
-        self.assertFalse((self.published / canonical.name.replace("~", ".")).exists())
-        self.assertEqual(index_identity(self.apk, self.published / "helloworld-packages.adb", name),
-                         original_identity)
-        dump = checked(self.apk, "adbdump", self.published / "helloworld-packages.adb")
-        self.assertIn(f"    version: {version}\n", dump)
-        self.assertIn("pkgname-spec: ${name}.apk\n", dump)
-        checked(self.apk, "--keys-dir", self.trusted_keys, "verify", uploaded,
-                self.published / "helloworld-packages.adb")
-        checked("sha256sum", "--check", "--strict", "SHA256SUMS", cwd=self.component)
-
-        install_root = self.work / "http-install-root"
-        install_root.mkdir()
-        repositories = self.work / "http-repositories"
-        pin = f"{name}@custom><{original_identity}"
-        with serve_release_assets(self.published) as (base_url, requests):
-            repositories.write_text(f"@custom {base_url}/helloworld-packages.adb\n")
-            checked(self.apk, "--root", install_root, "--arch", "x86_64", "--keys-dir",
-                    self.trusted_keys, "--repositories-file", repositories, "--no-cache",
-                    "add", "--usermode", "--initdb", pin)
-        self.assertIn("/helloworld-packages.adb", requests)
-        self.assertIn(f"/{name}.apk", requests)
-        self.assertFalse(any("~" in path or version in path for path in requests), requests)
-        self.assertEqual((install_root / "usr/share" / name).read_text(), "custom\n")
-        self.assertEqual((install_root / "etc/apk/world").read_text().strip(), pin)
-        self.assertRegex((install_root / "lib/apk/db/installed").read_text(),
-                         r"(?m)^V:" + re.escape(version) + r"$")
-
-    def test_mock_reproduces_github_tilde_filename_renaming(self):
-        asset = self.work / "legacy-1.0~abcdef.apk"
-        asset.write_bytes(b"fixture release asset")
-        checked("gh", "release", "upload", RELEASE_TAG, asset, "--repo", "example/router",
-                env=self.env)
-        view = json.loads(checked("gh", "release", "view", RELEASE_TAG, "--json", "assets",
-                                  env=self.env))
-        self.assertEqual(view["assets"], [{"name": "legacy-1.0.abcdef.apk", "size": asset.stat().st_size}])
-
-    def test_server_side_asset_rename_keeps_release_unpublished(self):
-        self.env["GH_MOCK_RENAME_ASSET"] = "1"
-        result = self.publish()
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertTrue(any(call[:2] == ["release", "upload"] for call in self.calls()))
-        self.assertFalse(any(call[:2] == ["release", "edit"] for call in self.calls()))
-        self.assertIn("custom-feed-smoke.apk", result.stdout)
-        self.assertIn("renamed-custom-feed-smoke.apk", result.stdout)
-
-    def test_existing_tag_is_rejected_before_release_creation(self):
-        self.env["GH_MOCK_EXISTING_TAG"] = "1"
-        result = self.publish()
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertFalse(any(call[:2] == ["release", "create"] for call in self.calls()))
-
-    def test_fullcone_runtime_and_luci_publish_in_one_complete_release(self):
-        self.publish_tag = FULLCONE_TAG
-        components = []
-        expected = set()
-        for kind in ("fullcone-runtime", "fullcone-luci"):
-            component = self.make_component(kind, name=kind + "-smoke")
-            self.prepare(component, kind)
-            components.append(component)
-            expected.update({kind + "-smoke.apk", kind + "-packages.adb", KEY_NAMES[kind]})
-        result = self.publish(*components)
-        self.assertEqual(result.returncode, 0, result.stdout)
-        calls = self.calls()
-        self.assertEqual(sum(call[:2] == ["release", "create"] for call in calls), 1)
-        self.assertEqual(sum(call[:2] == ["release", "edit"] for call in calls), 1)
-        assets = {Path(arg).name for call in calls if call[:2] == ["release", "upload"]
-                  for arg in call if arg.endswith((".apk", "-packages.adb", "-public-key.pem"))}
-        self.assertEqual(assets, expected)
-
-    def test_existing_release_is_rejected_before_release_creation(self):
-        self.env["GH_MOCK_EXISTING_RELEASE"] = "1"
-        result = self.publish()
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertFalse(any(call[:2] == ["release", "create"] for call in self.calls()))
-
-    def test_upload_failure_leaves_release_unpublished(self):
-        self.env["GH_MOCK_FAIL_UPLOAD"] = "1"
-        result = self.publish()
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertTrue(any(call[:2] == ["release", "create"] for call in self.calls()))
-        self.assertTrue(any(call[:2] == ["release", "upload"] for call in self.calls()))
-        self.assertFalse(any(call[:2] == ["release", "edit"] for call in self.calls()))
-
-    def test_duplicate_asset_names_are_rejected_before_create(self):
-        duplicate = self.work / "duplicate"
-        shutil.copytree(self.component, duplicate)
-        result = self.publish(self.component, duplicate)
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertFalse(any(call[:2] == ["release", "create"] for call in self.calls()))
-
-    def test_same_package_name_with_different_component_versions_is_rejected_before_create(self):
-        self.publish_tag = FULLCONE_TAG
-        components = []
-        for kind, version in (("fullcone-runtime", "1.0-r1"), ("fullcone-luci", "2.0-r1")):
-            component = self.make_component(kind, name="shared-package", version=version)
-            self.prepare(component, kind)
-            components.append(component)
-        result = self.publish(*components)
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertIn("shared-package.apk", result.stdout)
-        self.assertFalse(any(call[:2] == ["release", "create"] for call in self.calls()))
-
-    def test_private_key_in_component_is_rejected_before_create(self):
-        shutil.copyfile(self.sdk / "private-key.pem", self.component / "private-key.pem")
-        write_checksums(self.component)
-        result = self.publish()
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertFalse(any(call[:2] == ["release", "create"] for call in self.calls()))
-
-    def test_private_key_disguised_as_public_key_is_rejected(self):
-        shutil.copyfile(self.sdk / "private-key.pem", self.component / KEY_NAMES["helloworld"])
-        write_checksums(self.component)
-        result = self.publish()
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertFalse(any(call[:2] == ["release", "create"] for call in self.calls()))
-
-    def test_missing_uploaded_asset_keeps_release_unpublished(self):
-        self.env["GH_MOCK_MISSING_ASSET"] = "1"
-        result = self.publish()
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertTrue(any(call[:2] == ["release", "upload"] for call in self.calls()))
-        self.assertFalse(any(call[:2] == ["release", "edit"] for call in self.calls()))
-
-    def test_uploaded_asset_size_mismatch_keeps_release_unpublished(self):
-        self.env["GH_MOCK_WRONG_ASSET_SIZE"] = "1"
-        result = self.publish()
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertTrue(any(call[:2] == ["release", "upload"] for call in self.calls()))
-        self.assertFalse(any(call[:2] == ["release", "edit"] for call in self.calls()))
-
-    def test_authentication_failure_is_not_treated_as_absent_tag(self):
-        self.env["GH_MOCK_API_FAILURE"] = "1"
-        result = self.publish()
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertFalse(any(call[:2] == ["release", "create"] for call in self.calls()))
-
-    def test_private_repository_is_rejected(self):
-        self.env["GH_MOCK_PRIVATE_REPO"] = "1"
-        result = self.publish()
-        self.assertNotEqual(result.returncode, 0, result.stdout)
-        self.assertFalse(any(call[:2] == ["release", "create"] for call in self.calls()))
+    def test_verify_rejects_corrupt_embedded_assets(self):
+        self.runtime("stage", self.overlay)
+        rootfs = self.install_rootfs()
+        directory = rootfs / EMBEDDED_BASE / "helloworld"
+        for asset in directory.iterdir():
+            with self.subTest(asset=asset.name):
+                original = asset.read_bytes()
+                asset.write_bytes(original + b"corrupt")
+                self.runtime("verify", rootfs, success=False)
+                asset.write_bytes(original)
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@
 ## 🌟 核心特性
 
 - **现代解耦架构（纯装配固件流水线）**：
-  - **组件工厂（SDK）**：各第三方核心组件在匹配目标固件版本的官方 OpenWrt SDK 中独立预编译，随后显式签署 APK 并生成安装约束和 SHA256 清单，发布独立的 GitHub Release 软件源快照，并将索引、URL 与公钥打包为当前工作流运行的 Actions Artifacts。
+  - **组件工厂（SDK）**：各第三方核心组件在匹配目标固件版本的官方 OpenWrt SDK 中独立预编译，随后显式签署 APK，生成签名索引、安装约束和 SHA256 清单，通过当前工作流运行的 Actions Artifacts 交付。
   - **装配流水线（ImageBuilder）**：固件流水线不下载 SDK、不编译任何组件，仅拉取并验收对应版本的权威组件产物，调用官方 ImageBuilder 执行装配打包。
 - **动态版本锁定与防漂移机制**：
   - 全自动探测解析 OpenWrt 官方权威版本元数据（`downloads.openwrt.org/.versions.json`）；
@@ -18,10 +18,10 @@
   - 从 ImmortalWrt HEAD 提取 nftables FullCone NAT 供体补丁与源码；
   - 在完全同版 OpenWrt 官方 SDK 中重新编译 `kmod-nft-fullcone`、`libnftnl11`、`nftables-json`、`firewall4` 及 LuCI 界面（`luci-app-firewall`、`luci-i18n-firewall-zh-cn`）；
   - 内核 ABI 100% 匹配官方发行版内核，严禁使用 `--force-depends` 强行安装，并内置自研的真机运行时验收工具 [`fullcone-check`](files/usr/sbin/fullcone-check)。
-- **可持续安装软件的 `@custom` 源**：
-  - 每次组件构建发布按 OpenWrt 版本、架构、运行 ID 和尝试次数命名的独立软件源快照；
-  - 固件内置三份签名索引的 HTTPS 地址及对应公钥，保留 `@custom` 和定制包身份约束，安装普通官方软件包时继续使用匹配的组件源；
-  - 组件软件源保存在 GitHub Releases，不受 Actions Artifacts 的 1 天保留期影响。
+- **固件内置的 `@custom` 源**：
+  - 三类组件的 APK 和签名索引随固件保存在 `/usr/share/custom-apk/`，对应公钥进入 `/etc/apk/keys/`；
+  - 使用 `@custom file://` 本地源并保留定制包身份约束，安装普通官方软件包时继续使用与固件匹配的组件源；
+  - 组件源随固件保留，Actions Artifacts 到期不会影响部署后的组件源；普通官方包仍从 OpenWrt 官方源获取。
 - **SSR Plus 官方级无缝移植**：
   - 基于 [fw876/helloworld 官方 APK CI](https://github.com/fw876/helloworld) 流程源码编译 `luci-app-ssr-plus`、`xray-core`、`mihomo` 及简体中文语言包；
   - 按项目需求剥离 `naiveproxy`，并从同版 OpenWrt 官方源安全安装 `v2ray-geoip` 与 `v2ray-geosite`。
@@ -46,19 +46,15 @@ flowchart TD
     schedule["每日定时 (23:23 UTC / 北京 07:23)"] --> resolve["Job: resolve-version<br/>(仅探测并锁定一次官方稳定版本，如 25.12.5)"]
     dispatch["手动触发 (workflow_dispatch)"] --> resolve
 
-    resolve --> helloworld["Job: helloworld (Reusable)<br/>with: openwrt_version<br/>(编译并发布 helloworld 软件源快照 → 上传 Artifact)"]
-    resolve --> fullcone["Job: fullcone (Reusable)<br/>with: openwrt_version<br/>(编译并发布 FullCone 软件源快照 → 上传 Artifact)"]
+    resolve --> helloworld["Job: helloworld (Reusable)<br/>with: openwrt_version<br/>(编译并签名 helloworld 组件 → 上传 Artifact)"]
+    resolve --> fullcone["Job: fullcone (Reusable)<br/>with: openwrt_version<br/>(编译并签名 FullCone 组件 → 上传 Artifact)"]
 
     helloworld --> firmware["Job: firmware (Assembly-Only)<br/>(下载当前运行的组件 Artifacts → 纯装配固件 → Hard Validation → 软件源回归)"]
     fullcone --> firmware
-    helloworld --> hwfeed["独立 helloworld Release 软件源快照"]
-    fullcone --> fcfeed["独立 FullCone Release 软件源快照"]
-    hwfeed --> runtime["部署后 APK 安装 / 更新"]
-    fcfeed --> runtime
-    firmware --> runtime
-
+    firmware --> embedded["固件内置三份组件 APK / 签名索引 / 公钥"]
+    embedded --> runtime["部署后 APK 安装 / 更新"]
+    official["OpenWrt 官方 APK 源"] --> runtime
     firmware --> artifacts["上传 Actions Artifacts (保留 30 天)"]
-    firmware -.->|"手动勾选 publish_release: true"| release["发布 GitHub Release 固件包"]
 ```
 
 ### GitHub Actions 三大标准入口
@@ -68,8 +64,8 @@ flowchart TD
 | 工作流入口 | 文件路径 | 触发方式 | 功能与特性 |
 | :--- | :--- | :--- | :--- |
 | **每日自动构建 OpenWrt 固件** | [daily-build.yml](.github/workflows/daily-build.yml) | 定时任务 (`23 23 * * *`)<br>手动触发 (`workflow_dispatch`) | **全链路主流水线**：单次解析版本 → 并行强制重编两大组件 → 阻断等待成功 → 零编译纯装配固件 → 验收与软件源回归 → 上传 Artifacts。具备 `concurrency` 队列保护，绝不中断正在进行的构建。 |
-| **构建 helloworld 预编译组件** | [build-helloworld.yml](.github/workflows/build-helloworld.yml) | 可复用调用 (`workflow_call`)<br>独立手动 (`workflow_dispatch`) | 每次编译 SSR Plus 组件，校验后发布长期组件软件源，再上传 Actions Artifact（保留 1 天）。缓存用于构建工具与源码下载；当前 `force_rebuild` 输入未参与执行判断。 |
-| **构建 FullCone 预编译组件** | [build-fullcone.yml](.github/workflows/build-fullcone.yml) | 可复用调用 (`workflow_call`)<br>独立手动 (`workflow_dispatch`) | 每次依次编译 FullCone runtime 与 LuCI，校验后发布长期组件软件源，再上传 Actions Artifact（保留 1 天）。当前 `force_rebuild` 输入未参与执行判断。 |
+| **构建 helloworld 预编译组件** | [build-helloworld.yml](.github/workflows/build-helloworld.yml) | 可复用调用 (`workflow_call`)<br>独立手动 (`workflow_dispatch`) | 每次编译 SSR Plus 组件，严格验签并生成组件索引后上传 Actions Artifact（保留 1 天）。缓存用于构建工具与源码下载；当前 `force_rebuild` 输入未参与执行判断。 |
+| **构建 FullCone 预编译组件** | [build-fullcone.yml](.github/workflows/build-fullcone.yml) | 可复用调用 (`workflow_call`)<br>独立手动 (`workflow_dispatch`) | 每次依次编译 FullCone runtime 与 LuCI，严格验签并生成各自索引后上传 Actions Artifact（保留 1 天）。当前 `force_rebuild` 输入未参与执行判断。 |
 
 ---
 
@@ -92,8 +88,7 @@ flowchart TD
 ├── scripts/
 │   ├── build-firmware.sh         # 固件纯装配核心独立流水线 (Assembly-Only)
 │   ├── prepare-component-feed.sh # 签署 SDK APK，生成签名索引、身份约束与完整校验清单
-│   ├── publish-component-feed.sh # 上传全部资产后公开独立 Release 软件源快照
-│   ├── runtime-custom-feed.sh     # 验证公开索引、写入运行时源，并在 rootfs 副本中验收 APK 事务
+│   ├── runtime-custom-feed.sh     # 内置组件 APK / 索引 / 公钥，并在 rootfs 副本中验收 APK 事务
 │   ├── configure-imagebuilder-apk.py # 调整本地 ImageBuilder，完整传递 APK 身份约束
 │   ├── resolve-version.sh        # OpenWrt 官方权威稳定版版本解析工具
 │   ├── diff_manifest.py          # 软件包清单差分比对工具 (生成 diff 与 md 报告)
@@ -112,18 +107,18 @@ flowchart TD
 
 ### 1. 云端构建 (GitHub Actions)
 
-- **每日全自动编排**：每天**北京时间上午 07:23**（即 `23:23 UTC`）由主流水线自动触发，执行版本锁定、组件并发强制重编与固件纯装配。固件默认保存于 GitHub Actions Artifacts 中（保留 30 天），**默认不发布固件 Release**；两个组件软件源 Release 始终发布，供部署后的 APK 使用，且不会改变 GitHub 的 Latest Release 标记。
+- **每日全自动编排**：每天**北京时间上午 07:23**（即 `23:23 UTC`）由主流水线自动触发，执行版本锁定、组件并发强制重编与固件纯装配。组件归档和固件均通过 GitHub Actions Artifacts 交付，固件 Artifact 保留 30 天。工作流仅需 `contents: read`，仓库可保持私有。
 - **纯净提交策略**：代码推送 (Push) 不触发任何构建，杜绝 Actions 额度浪费。
 - **手动触发构建**：
   - **构建完整固件**：在 Actions -> **每日自动构建 OpenWrt 固件** 中点击 **Run workflow**：
     - `openwrt_version`: 默认 `latest`（自动探测最新稳定版），亦可指定如 `25.12.5`；
     - `rootfs_partsize`: 根分区大小，默认 `2048` MB (2GB)；
-    - `publish_release`: 是否发布固件到 GitHub Releases（默认 `false`；组件软件源始终发布，需要正式发布固件时勾选为 `true`）。
+    - `grub_timeout`: GRUB 引导等待时间，默认 `0` 秒。
   - **独立构建组件**：如需单独更新某一组件，可在对应的预编译工作流中独立触发。
 
 ### 2. 本地纯装配构建 (Ubuntu / Debian / WSL2)
 
-本地纯装配需要提前准备与目标版本一致的三个预编译组件目录。可从对应组件工作流下载两份 Artifact，取得其中的 `.tar.gz` 归档；组件 Artifact 保留 1 天。归档必须来自本次修复后的组件工作流，包含已发布的软件源索引、URL 和公钥；新检出的仓库只有源码，`make build` 不会自动下载、编译或发布组件。装配时需要联网验证发布索引与归档内容一致。
+本地纯装配需要提前准备与目标版本一致的三个预编译组件目录。可从对应组件工作流下载两份 Artifact，取得其中的 `.tar.gz` 归档；组件 Artifact 保留 1 天。归档须包含 APK、签名索引、公钥和完整 SHA256 清单；新检出的仓库只有源码，`make build` 不会自动下载或编译组件。装配需要联网获取官方 ImageBuilder 和普通官方包，组件源直接从已验收的归档内置到固件。
 
 ```bash
 # 1. 检查并安装基本装配依赖
@@ -159,13 +154,17 @@ OPENWRT_VERSION=25.12.5 ROOTFS_PARTSIZE=4096 make build  # 沿用已解压组件
 
 ## `@custom` 软件源部署与维护
 
-首次部署这次修复时，先把代码推送到**公开 GitHub 仓库**，确保 Actions 的 `GITHUB_TOKEN` 可写入仓库内容，再手动运行“每日自动构建 OpenWrt 固件”。组件 job 会先签署未签名的 SDK APK 并严格验签，再生成签名索引，创建 draft Release，上传全部 APK、索引与公钥，最后公开软件源快照。固件 job 在发布完成后才装配并验证这些 URL；本地修改本身不会创建公网软件源。代码更新后应创建新的 workflow 运行；直接重跑旧运行仍使用旧提交。
+组件 job 在同版 SDK 编译后，对未签名 APK 校验内容并补签，严格验证全部 APK 与签名索引，再上传组件 Artifact。固件 job 等待这些步骤成功，验收归档后将三个组件源完整装入镜像。构建和部署无需公开仓库、`gh` 或额外 GitHub token，Actions 的仓库内容权限仅为只读。
 
-快照标签示例为 `custom-helloworld-25.12.5-x86_64-<run-id>-<attempt>` 与 `custom-fullcone-25.12.5-x86_64-<run-id>-<attempt>`。FullCone runtime 和 LuCI 使用同一 Release 内各自的索引。每次重跑组件 job 会产生新的 URL；只重跑 firmware job 时，可复用同次运行中已经成功的组件快照和仍未过期的 Artifact。两个组件的尝试次数允许不同，已经发布的快照不覆盖，固件不使用浮动的 `latest` 地址。GitHub 私有仓库的 Release 无法供无凭据的路由器获取，因此发布脚本会拒绝私有仓库。
+固件内的 `/etc/apk/repositories.d/custom-components.list` 包含以下三行，对应公钥位于 `/etc/apk/keys/`：
 
-固件内的 `/etc/apk/repositories.d/custom-components.list` 包含三行 `@custom https://github.com/.../releases/download/.../*-packages.adb`，对应公钥位于 `/etc/apk/keys/`。不必额外设置 `CUSTOM_SIGNING_KEY`：每次 SDK 生成的签名公钥会随其快照固定进入固件；如需统一签名身份，可继续设置此可选 secret。索引和 APK 均验证签名，元数据、安装约束、URL、公钥与索引也进入 SHA256 清单。
+```text
+@custom file:///usr/share/custom-apk/helloworld/helloworld-packages.adb
+@custom file:///usr/share/custom-apk/fullcone-runtime/fullcone-runtime-packages.adb
+@custom file:///usr/share/custom-apk/fullcone-luci/fullcone-luci-packages.adb
+```
 
-Release 中的 APK 使用 `<包名>.apk`，签名索引通过 `pkgname-spec: ${name}.apk` 指向这些资产。组件归档及 ImageBuilder 本地仓库仍保留 `<包名>-<版本>.apk`；两份 APK 内容相同，内部版本及身份约束不变。这样可避免 [GitHub 自动改写特殊字符文件名](https://docs.github.com/en/rest/releases/assets#upload-a-release-asset)，例如把版本中的 `~` 改成 `.`，造成索引指向不存在的资产。每个快照的同名包只允许一个版本，多个组件的发布包名冲突会在创建草稿前拒绝。
+每个目录同时保存该索引引用的 `<包名>-<版本>.apk`，包括版本中原有的 `~` 等字符。APK 内部版本与身份保持原值。索引和 APK 均严格验签，元数据、安装约束、公钥与索引进入 SHA256 清单；固件验收还逐字节比对内置文件与组件归档。默认使用 SDK 生成的签名密钥，公钥随组件进入固件；`CUSTOM_SIGNING_KEY` 仍可选，用于统一多个构建的签名身份。
 
 定制包使用 `name@custom><Q1...=` 形式固定 APK 身份。装配脚本会先调整本地 ImageBuilder 的 `FormatPackages`，将完整约束作为一个参数传给 APK，避免摘要末尾的 `=` 被拆分或 `><` 被 shell 解释；普通包的版本与 ABI 后缀处理保留原有逻辑。无法识别的 ImageBuilder 格式会阻止构建。
 
@@ -173,17 +172,18 @@ Release 中的 APK 使用 `<包名>.apk`，签名索引通过 `pkgname-spec: ${n
 
 ```sh
 cat /etc/apk/repositories.d/custom-components.list
+ls /usr/share/custom-apk/*/
 apk update
 apk add --simulate coremark
 ```
 
-`apk update` 应能下载官方和定制源索引；模拟安装应不再报 `missing repository tags`，且无需更换 FullCone / LuCI 定制包。软件源是**与这份固件匹配的组件快照**，新构建不会让旧固件自动追踪新的组件版本。涉及内核或组件版本变化时，应采用对应的完整新固件。
+`apk update` 应能读取内置组件索引并获取官方索引；模拟安装应不再报 `missing repository tags`，且无需更换 FullCone / LuCI 定制包。普通官方包仍需要访问 OpenWrt 官方源。组件源是**与这份固件匹配的固定快照**，不会自动获取新的组件版本；涉及内核或组件变化时，应采用对应的完整新固件。
 
-维护时不要删除仍被固件引用的软件源 Release、tag 或资产，也不要将仓库改名、转为私有或修改发布资产。Actions Artifact 到期不会影响已发布软件源，但删除 Release 会让对应固件失去该源。旧固件不会因为仓库代码更新自动修复；推荐重新构建并部署完整新固件。若需手工恢复旧固件，必须拿到其原始组件 APK / 索引、匹配的签名公钥及精确 kernel ABI，单纯换成某次新构建的 URL 不能保证安全。
+完整 APK 和签名索引随固件保留，会增加镜像与根文件系统的空间占用。Actions Artifact 到期、仓库改名或转为私有均不影响已部署固件的本地组件源。请保留 `/usr/share/custom-apk/` 和对应公钥；已部署的旧固件不会因仓库代码更新自动获得这些文件，推荐重新构建并部署完整新固件。手工恢复旧固件时，必须使用与其已安装 APK 身份、签名公钥及内核 ABI 完全匹配的原始组件。
 
-本次 42 项回归已在本地通过，使用真实 APK v3 工具验证 SDK 产物补签、索引和身份约束、普通包安装 / 升级时保持定制身份，以及 ImageBuilder 参数传递。发布测试的 `gh` 替身模拟 GitHub 对 `~` 文件名的改写；另通过真实本地 HTTP 下载并安装含 `~` 版本的 APK，确认仅请求 `<包名>.apk`，版本、签名和身份不变。运行时源测试使用本地 HTTPS 下载映射，检查配置、公钥、world 及失败阻断。[最新 CI 37908224118](https://github.com/EluneAdore/openwrt-imagebuilder-ci/actions/runs/37908224118) 已完成两个组件编译、APK 补签和索引验签，随后因 GitHub 改写资产名而拒绝公开草稿。**发布文件名修复后的真实发布与完整固件装配仍需新的公开 CI 运行验证**；本地测试通过不表示软件源已经上线。详细范围和命令见 [仓库分析的验证边界](docs/repository-analysis.md#验证边界)。
+回归测试使用真实 APK v3 工具检查 SDK 产物补签、索引与身份约束、普通包安装 / 升级时保持定制身份，以及 ImageBuilder 参数传递。运行时源测试检查内置 APK、索引、公钥、world、失败阻断和 rootfs 副本中的模拟安装。详细范围和命令见 [仓库分析的验证边界](docs/repository-analysis.md#验证边界)。
 
-主工作流的 firmware job 在装配后指定同版 ImageBuilder 的 APK 工具运行这些回归；检查通过后才生成发布元数据、上传固件 Artifact，并按 `publish_release` 开关发布固件。
+主工作流的 firmware job 在装配后指定同版 ImageBuilder 的 APK 工具运行这些回归；检查通过后上传固件 Artifact。代码更新后应创建新的 workflow 运行，验证完整装配与最终镜像；直接重跑旧运行仍使用旧提交。
 
 ---
 
@@ -203,6 +203,7 @@ apk add --simulate coremark
 | **系统升级** | 保留手动上传固件升级；不集成值守式系统升级 |
 
 ### 快速部署步骤：
+
 1. **解压固件**：将下载的 `.img.gz` 解压得到 `.img` 磁盘镜像文件；
 2. **虚拟化部署**：在虚拟化平台（PVE / ESXi / KVM / 飞牛 OS 等）中导入为虚拟磁盘（推荐 VirtIO 总线，**引导模式务必设为 UEFI**）；
 3. **物理机部署**：使用 Rufus、balenaEtcher 或 `dd` 将解压后的 `.img` 写入 U 盘或目标磁盘；

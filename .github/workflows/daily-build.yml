@@ -18,18 +18,13 @@ on:
         description: "GRUB 引导倒计时 (秒，默认 0 即开机不等待)"
         required: false
         default: "0"
-      publish_release:
-        description: "是否发布固件 Release (默认 false；运行时所需的组件 APK 源始终发布)"
-        required: false
-        type: boolean
-        default: false
 
 concurrency:
   group: daily-openwrt-build
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
   actions: read
 
 jobs:
@@ -170,17 +165,16 @@ jobs:
             exit 1
           }
 
-          # 运行时软件源必须随本次组件一起交付，拒绝旧版无源归档。
+          # 内嵌软件源索引必须随本次组件一起交付，拒绝旧版无源归档。
           component_dirs=("${HW_DIR}" "${FC_DIR}/runtime" "${FC_DIR}/luci")
           feed_kinds=(helloworld fullcone-runtime fullcone-luci)
           for i in "${!component_dirs[@]}"; do
             component_dir="${component_dirs[$i]}"
-            for feed_file in runtime-repository.url "${feed_kinds[$i]}-packages.adb"; do
-              [ -s "${component_dir}/${feed_file}" ] || {
-                echo "❌ 致命错误: 组件缺少已发布软件源元数据: ${component_dir}/${feed_file}" >&2
-                exit 1
-              }
-            done
+            feed_file="${feed_kinds[$i]}-packages.adb"
+            [ -s "${component_dir}/${feed_file}" ] || {
+              echo "❌ 致命错误: 组件缺少内嵌软件源索引: ${component_dir}/${feed_file}" >&2
+              exit 1
+            }
           done
 
           echo "hw_dir=${HW_DIR}" >> $GITHUB_OUTPUT
@@ -217,40 +211,20 @@ jobs:
           BUILD_DATE="${BUILD_DATE}" \
           ./scripts/build-firmware.sh
 
-      - name: 验证长期组件软件源回归
+      - name: 验证内嵌组件软件源回归
         run: |
           CUSTOM_FEED_APK=".work/openwrt-imagebuilder-${OPENWRT_VERSION}-x86-64.Linux-x86_64/staging_dir/host/bin/apk" \
             python3 -m unittest discover -s tests -v
 
-      - name: 生成 Release 发布元数据与差分报告
+      - name: 生成 Artifact 名称并更新 Manifest 清单缓存
         id: meta
         run: |
-          # 自动从本次生成的 manifest 文件名中提取实际构建版本
-          MANIFEST_PATH=$(find bin -maxdepth 1 -type f -name '*.manifest' -print -quit)
-          ACTUAL_VERSION=$(basename "$MANIFEST_PATH" | sed -E 's/^openwrt-([0-9]+\.[0-9]+\.[0-9]+(-rc[0-9]+)?)-.*/\1/')
-          if [ -z "$ACTUAL_VERSION" ]; then
-            ACTUAL_VERSION="${{ steps.version.outputs.version }}"
-          fi
-          TAG_NAME="v${ACTUAL_VERSION}-${BUILD_DATE}"
-          echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
-          echo "release_title=OpenWrt ${ACTUAL_VERSION} x86_64 (${BUILD_DATE})" >> $GITHUB_OUTPUT
-          echo "actual_version=${ACTUAL_VERSION}" >> $GITHUB_OUTPUT
+          echo "artifact_name=openwrt-x86_64-v${OPENWRT_VERSION}-${BUILD_DATE}" >> $GITHUB_OUTPUT
 
           # 更新清单缓存供下一次对比
           mkdir -p .manifest-cache
           rm -rf .manifest-cache/*
           cp -f bin/*.manifest .manifest-cache/last.manifest 2>/dev/null || true
-
-          # 读取差分报告注入 Release 内容
-          DIFF_CONTENT=""
-          if [ -f "bin/manifest.md" ]; then
-            DIFF_CONTENT=$(cat bin/manifest.md)
-          fi
-          {
-            echo "diff_content<<EOF"
-            echo "$DIFF_CONTENT"
-            echo "EOF"
-          } >> $GITHUB_OUTPUT
 
       - name: 保存本次 Manifest 清单缓存
         uses: actions/cache/save@v5
@@ -262,46 +236,7 @@ jobs:
       - name: 上传构建产物至 Artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: openwrt-x86_64-${{ steps.meta.outputs.tag_name }}
+          name: ${{ steps.meta.outputs.artifact_name }}
           path: bin/*
           overwrite: true
           retention-days: 30
-
-      - name: 自动发布 GitHub Release
-        if: ${{ github.event.inputs.publish_release == 'true' || github.event.inputs.publish_release == true }}
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.meta.outputs.tag_name }}
-          name: ${{ steps.meta.outputs.release_title }}
-          draft: false
-          prerelease: false
-          overwrite_files: true
-          files: |
-            bin/*combined-efi*.img.gz*
-            bin/sha256sums
-            bin/*.manifest
-            bin/manifest.diff
-            bin/manifest.md
-            bin/*build-info.txt
-          body: |
-            ## OpenWrt x86_64 UEFI 自动构建固件发布
-
-            * **OpenWrt 版本**: `${{ steps.meta.outputs.actual_version }}`
-            * **构建时间**: `${{ steps.meta.outputs.tag_name }}`
-            * **适用环境**: FNOS (飞牛 OS) KVM / PVE / ESXi / 实体机 x86_64 (UEFI 引导)
-            * **根分区大小**: `${{ github.event.inputs.rootfs_partsize || '2048' }} MB (2GB)`
-            * **流水线架构**: 纯装配流水线 (Assembly-Only，零组件编译与零 SDK 下载)
-            * **集成特性**:
-              - 🚀 全套 LuCI 简体中文界面，默认启用现代侧边栏主题 (`luci-theme-footstrap`)
-              - 📶 硬件直通网卡驱动: Realtek 2.5G (`r8125-rss`), 万兆 (`r8127-rss`), Wi-Fi 6/6E (`mt7921e`, `mt7922`)
-              - ⚡ 队列流控: SQM (带抗延迟 `CAKE` 算法)
-              - 💻 网页终端: `ttyd`
-              - 🖥️ QEMU Guest Agent: 官方 `qemu-ga`，支持 PVE / QEMU / KVM 宿主协作（宿主需启用 Agent 通道）
-              - 🌍 SSR Plus: 预编译组件集成 `luci-app-ssr-plus`、`xray-core`、`mihomo`
-              - 🔄 FullCone NAT: 预编译组件集成 `kmod-nft-fullcone`、`libnftnl11`、`nftables-json`、`firewall4` 及 LuCI 界面
-              - 🕒 权威授时: 阿里云 / 腾讯云 / 国家授时中心 NTP
-              - 🔑 安全加固: SSH 仅限 LAN 口监听并支持免密密钥认证
-
-            ---
-
-            ${{ steps.meta.outputs.diff_content }}

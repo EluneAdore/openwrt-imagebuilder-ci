@@ -6,7 +6,7 @@ OpenWrt Manifest 比对与变动分析工具 (diff_manifest.py)
 1. 比对上一次与本次固件生成的 *.manifest 软件包清单
 2. 输出新增、移除、升级/降级的软件包列表
 3. 生成 manifest.diff (纯文本)、manifest.md (Markdown)
-4. 支持自动注入 GitHub Actions $GITHUB_STEP_SUMMARY 与 Release Notes
+4. 支持自动注入 GitHub Actions $GITHUB_STEP_SUMMARY
 """
 
 import sys
@@ -74,7 +74,7 @@ def generate_diff(prev_pkgs, curr_pkgs):
 
 
 def build_markdown_report(added, removed, changed, unchanged, curr_count, is_first_run=False):
-    """构建用于 GitHub Step Summary 与 Release 说明的 Markdown 报告"""
+    """构建用于 GitHub Step Summary 与构建产物的 Markdown 报告"""
     lines = []
     lines.append("### 📦 固件软件包变动报告 (Manifest Diff)")
     lines.append("")

@@ -25,7 +25,7 @@ on:
         default: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
@@ -160,19 +160,11 @@ jobs:
 
           echo "✓ helloworld 组件 Hard Validation 校验通过。"
 
-      - name: 准备并发布长期可用的 helloworld APK 软件源
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: 准备固件内嵌的 helloworld APK 软件源
         run: |
           output_dir="${{ steps.build_step.outputs.output_dir }}"
-          # 每次运行尝试独立发布，已有固件引用的快照不可覆盖。
-          release_tag="custom-helloworld-${OPENWRT_VERSION}-x86_64-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          release_base_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${release_tag}"
           ./scripts/prepare-component-feed.sh \
-            helloworld "${output_dir}" "${SDK_DIR}" "${release_base_url}"
-          ./scripts/publish-component-feed.sh \
-            "${release_tag}" "helloworld APK 源 / OpenWrt ${OPENWRT_VERSION} / ${GITHUB_RUN_ID}.${GITHUB_RUN_ATTEMPT}" \
-            "${output_dir}"
+            helloworld "${output_dir}" "${SDK_DIR}"
 
       - name: 打包预编译组件产物
         id: package_step
